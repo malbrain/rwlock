@@ -1,5 +1,6 @@
 //  a phase fair reader/writer lock implementation
-//	07 MAR 14
+//	by Karl Malbrain, malbrain@cal.berkeley.edu
+//	11 MAR 2014
 
 typedef unsigned short ushort;
 #include <stdlib.h>
@@ -29,7 +30,11 @@ ushort w, r, tix;
 	// wait for our ticket to come up
 
 	while( tix != lock->serving[0] )
+#ifdef unix
 		sched_yield();
+#else
+		SwitchToThread ();
+#endif
 
 	w = PRES | (tix & PHID);
 #ifdef  unix
@@ -65,7 +70,11 @@ ushort w;
 #endif
 	if( w )
 	  while( w == (*lock->rin & MASK) )
+#ifdef unix
 		sched_yield ();
+#else
+		SwitchToThread ();
+#endif
 }
 
 void ReadRelease (RWLock *lock)
