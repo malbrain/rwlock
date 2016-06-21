@@ -1,221 +1,159 @@
-//  a phase fair reader/writer lock implementation
+//  a phase fair reader/writer lock implementation, version 2
 //	by Karl Malbrain, malbrain@cal.berkeley.edu
-//	11 MAR 2014
+//	20 JUN 2016
 
-typedef unsigned short ushort;
 #include <stdlib.h>
+#include <stdint.h>
 #include <memory.h>
 
-typedef struct {
-	ushort rin[1];
-	ushort rout[1];
-	ushort ticket[1];
-	ushort serving[1];
+typedef union {
+  struct {
+	volatile uint16_t readers[1];
+	volatile uint16_t writers[1];
+	volatile uint16_t tix[1];
+  };
+  volatile uint32_t urw;
 } RWLock;
 
-#define PHID 0x1
-#define PRES 0x2
-#define MASK 0x3
-#define RINC 0x4
+void writeLock (RWLock *lock);
+void writeUnlock (RWLock *lock);
+void readLock (RWLock *lock);
+void readUnlock (RWLock *lock);
 
-void WriteLock (RWLock *lock)
+#ifndef _WIN32
+#include <sched.h>
+#else
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
+
+//	reader/writer lock implementation
+
+void writeLock (RWLock *lock)
 {
-ushort w, r, tix;
+#ifndef _WIN32
+	uint16_t me = __sync_fetch_and_add(lock->tix, 1);
 
-#ifdef unix
-	tix = __sync_fetch_and_add (lock->ticket, 1);
+	while (me != *lock->writers)
+		relax();
 #else
-	_InterlockedAdd16 (lock->ticket, 1);
-#endif
-	// wait for our ticket to come up
+	uint16_t me = InterlockedIncrement16(lock->tix)-1;
 
-	while( tix != lock->serving[0] )
-#ifdef unix
-		sched_yield();
-#else
-		SwitchToThread ();
-#endif
-
-	w = PRES | (tix & PHID);
-#ifdef  unix
-	r = __sync_fetch_and_add (lock->rin, w);
-#else
-	r = _InterlockedAdd16 (lock->rin, w);
-#endif
-	while( r != *lock->rout )
-#ifdef unix
-		sched_yield();
-#else
-		SwitchToThread();
+	while (me != *lock->writers)
+		YieldProcessor();
 #endif
 }
 
-void WriteRelease (RWLock *lock)
+void writeUnlock (RWLock *lock)
 {
-#ifdef unix
-	__sync_fetch_and_and (lock->rin, ~MASK);
-#else
-	_InterlockedAnd16 (lock->rin, ~MASK);
-#endif
-	lock->serving[0]++;
+	RWLock tmp;
+
+	tmp.urw = lock->urw;
+	(*tmp.writers)++;
+	(*tmp.readers)++;
+	lock->urw = tmp.urw;
 }
 
-void ReadLock (RWLock *lock)
+void readLock (RWLock *lock)
 {
-ushort w;
-#ifdef unix
-	w = __sync_fetch_and_add (lock->rin, RINC) & MASK;
-#else
-	w = _InterlockedAdd16 (lock->rin, RINC) & MASK;
-#endif
-	if( w )
-	  while( w == (*lock->rin & MASK) )
-#ifdef unix
-		sched_yield ();
-#else
-		SwitchToThread ();
-#endif
-}
+#ifndef _WIN32
+	uint16_t me = __sync_fetch_and_add(lock->tix, 1);
 
-void ReadRelease (RWLock *lock)
-{
-#ifdef unix
-	__sync_fetch_and_add (lock->rout, RINC);
+	while (me != *lock->readers)
+		relax();
+
+	__sync_fetch_and_add(lock->readers, 1);
 #else
-	_InterlockedAdd16 (lock->rout, RINC);
+	uint16_t me = InterlockedIncrement16(lock->tix) - 1;
+
+	while (me != *lock->readers)
+		YieldProcessor();
+
+	InterlockedIncrement16(lock->readers);
 #endif
 }
 
-//	lite weight spin lock Latch Manager
-
-volatile typedef struct {
-	ushort exclusive:1;
-	ushort pending:1;
-	ushort share:14;
-} BtSpinLatch;
-
-#define XCL 1
-#define PEND 2
-#define BOTH 3
-#define SHARE 4
-
-//	wait until write lock mode is clear
-//	and add 1 to the share count
-
-void bt_spinreadlock(BtSpinLatch *latch)
+void readUnlock (RWLock *lock)
 {
-ushort prev;
-
-  do {
-#ifdef unix
-	prev = __sync_fetch_and_add ((ushort *)latch, SHARE);
+#ifndef _WIN32
+	__sync_fetch_and_add(lock->writers, 1);
 #else
-	prev = _InterlockedAdd16((ushort *)latch, SHARE);
-#endif
-	//  see if exclusive request is granted or pending
-
-	if( !(prev & BOTH) )
-		return;
-#ifdef unix
-	prev = __sync_fetch_and_add ((ushort *)latch, -SHARE);
-#else
-	prev = _InterlockedAdd16((ushort *)latch, -SHARE);
-#endif
-#ifdef  unix
-  } while( sched_yield(), 1 );
-#else
-  } while( SwitchToThread(), 1 );
+	InterlockedIncrement16(lock->writers);
 #endif
 }
 
-//	wait for other read and write latches to relinquish
+#ifdef STANDALONE
+#include <stdio.h>
 
-void bt_spinwritelock(BtSpinLatch *latch)
-{
-ushort prev;
-
-  do {
-#ifdef  unix
-	prev = __sync_fetch_and_or((ushort *)latch, PEND | XCL);
+#ifdef _WIN32
+DWORD WINAPI launch(RWLock *lock) {
 #else
-	_InterlockedOr16((ushort *)latch, PEND | XCL);
+#include <pthread.h>
+
+void *launch(RWLock *lock) {
 #endif
-	if( !(prev & XCL) )
-	  if( !(prev & ~BOTH) )
-		return;
-	  else
-#ifdef unix
-		__sync_fetch_and_and ((ushort *)latch, ~XCL);
-#else
-		_InterlockedAnd16((ushort *)latch, ~XCL);
-#endif
-#ifdef  unix
-  } while( sched_yield(), 1 );
-#else
-  } while( SwitchToThread(), 1 );
-#endif
-}
 
-//	try to obtain write lock
-
-//	return 1 if obtained,
-//		0 otherwise
-
-int bt_spinwritetry(BtSpinLatch *latch)
-{
-ushort prev;
-
-#ifdef  unix
-	prev = __sync_fetch_and_or((ushort *)latch, XCL);
-#else
-	_InterlockedOr16((ushort *)latch, XCL);
-#endif
-	//	take write access if all bits are clear
-
-	if( !(prev & XCL) )
-	  if( !(prev & ~BOTH) )
-		return 1;
-	  else
-#ifdef unix
-		__sync_fetch_and_and ((ushort *)latch, ~XCL);
-#else
-		_InterlockedAnd16((ushort *)latch, ~XCL);
-#endif
-	return 0;
-}
-
-//	clear write mode
-
-void bt_spinreleasewrite(BtSpinLatch *latch)
-{
-#ifdef unix
-	__sync_fetch_and_and((ushort *)latch, ~BOTH);
-#else
-	_InterlockedAnd16((ushort *)latch, ~BOTH);
-#endif
-}
-
-//	decrement reader count
-
-void bt_spinreleaseread(BtSpinLatch *latch)
-{
-#ifdef unix
-	__sync_fetch_and_add((ushort *)latch, -SHARE);
-#else
-	_InterlockedAdd16((ushort *)latch, -SHARE);
-#endif
-}
-
-int main (int argc, char *argv)
-{
-BtSpinLatch latch[1];
-RWLock lock[1];
-int idx;
-
-	memset (lock, 0, sizeof(RWLock));
-	memset (latch, 0, sizeof(BtSpinLatch));
-	for( idx = 0; idx < 1000000000; idx++ ) {
-		bt_spinreadlock(latch);
-		bt_spinreleaseread(latch);
+	for( int idx = 0; idx < 1000000000; idx++ ) {
+		readLock(lock), readUnlock(lock);
+		if( (idx & 31) == 0)
+			writeLock(lock), writeUnlock(lock);
 	}
+
+#ifdef _WIN32
+	return 0;
+#else
+	return NULL;
+#endif
 }
+
+int main (int argc, char **argv)
+{
+int count;
+RWLock lock[1];
+#ifdef unix
+pthread_t *threads;
+#else
+HANDLE *threads;
+#endif
+#ifdef _WIN32
+	DWORD thread_id[1];
+#else
+	pthread_t thread_id[1];
+#endif
+
+	if (argc < 2) {
+		fprintf(stderr, "Usage: %s #thrds\n", argv[0]); 
+		exit(1);
+	}
+
+	count = atoi(argv[1]);
+	memset (lock, 0, sizeof(RWLock));
+
+	printf("sizeof RWLock: %d\n", (int)sizeof(lock));
+#ifdef unix
+	threads = malloc (count * sizeof(pthread_t));
+#else
+	threads = malloc (count * sizeof(HANDLE));
+#endif
+	for (int idx = 0; idx < count; idx++) {
+#ifdef _WIN32
+		threads[idx] = CreateThread(NULL, 0, (PTHREAD_START_ROUTINE)launch, lock, 0, thread_id);
+#else
+		pthread_create(thread_id, NULL, launch, lock);
+#endif
+	}
+
+	// 	wait for termination
+
+#ifdef unix
+	for( int idx = 0; idx < count; idx++ )
+		pthread_join (threads[idx], NULL);
+#else
+	WaitForMultipleObjects (count, threads, TRUE, INFINITE);
+
+	for( int idx = 0; idx < count; idx++ )
+		CloseHandle(threads[idx]);
+#endif
+}
+#endif
+
