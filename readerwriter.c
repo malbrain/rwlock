@@ -307,6 +307,9 @@ void WriteLock3 (RWLock3 *lock)
 {
 uint32_t spinCount = 0;
 uint16_t w, r, tix;
+#ifdef _WIN32
+HANDLE timer = NULL;
+#endif
 
 #ifdef unix
 	tix = __sync_fetch_and_add (lock->ticket, 1);
@@ -317,7 +320,11 @@ uint16_t w, r, tix;
 
 	while( tix != lock->serving[0] )
 	  if (lock_spin(&spinCount))
+#ifdef _WIN32
+	    nanosleep (spinCount, &timer);
+#else
 		lock_sleep (spinCount);
+#endif
 
 	w = PRES | (tix & PHID);
 #ifdef  unix
@@ -328,7 +335,15 @@ uint16_t w, r, tix;
 
 	while( r != *lock->rout )
 	  if (lock_spin(&spinCount))
+#ifdef _WIN32
+	    nanosleep (spinCount, &timer);
+#else
 		lock_sleep (spinCount);
+#endif
+#ifdef _WIN32
+	if( timer )
+		CloseHandle(timer);
+#endif
 }
 
 void WriteUnlock3 (RWLock3 *lock)
@@ -345,6 +360,10 @@ void ReadLock3 (RWLock3 *lock)
 {
 uint32_t spinCount = 0;
 uint16_t w;
+#ifdef _WIN32
+HANDLE timer = NULL;
+#endif
+
 #ifdef unix
 	w = __sync_fetch_and_add (lock->rin, RINC) & MASK;
 #else
@@ -353,7 +372,15 @@ uint16_t w;
 	if( w )
 	  while( w == (*lock->rin & MASK) )
 	   if (lock_spin(&spinCount))
+#ifndef _WIN32
 		lock_sleep (spinCount);
+#else
+	    nanosleep (spinCount, &timer);
+#endif
+#ifdef _WIN32
+	if( timer )
+		CloseHandle(timer);
+#endif
 }
 
 void ReadUnlock3 (RWLock3 *lock)
@@ -430,11 +457,12 @@ struct timeval tv[1];
 }
 #endif
 
-unsigned char Array[256] __attribute__((aligned(64)));
 #ifdef unix
+unsigned char Array[256] __attribute__((aligned(64)));
 #include <pthread.h>
 pthread_rwlock_t lock0[1] = {PTHREAD_RWLOCK_INITIALIZER};
 #else
+__declspec(align(64)) unsigned char Array[256];
 SRWLOCK lock0[1] = {SRWLOCK_INIT};
 #endif
 RWLock1 lock1[1];
@@ -529,6 +557,7 @@ int idx;
 #ifdef unix
 pthread_t *threads;
 #else
+DWORD thread_id[1];
 HANDLE *threads;
 #endif
 
