@@ -1,12 +1,16 @@
 rwlock
 ======
 
-Phase Fair and Standard Reader Writer Locks
+Phase Fair Reader Writer Locks
 
-readerwriter.c: linux/Windows sched_yield/SwitchToThread phase-fair version. Also includes non-fair light weight rwlocks.
+readerwriter.c: linux/Windows spinlock phase-fair. Four versions, 8 or 12 bytes each.
 
-rwfutex.c:	Linux only phase-fair version that utilizes futex calls on reader/writer contention. Also includes a semi-fair light weight rwlock of 4 bytes.
+rwfutex.c:	Four Linux only phase-fair versions that utilize futex calls on contention. Locks are 4 or 8 bytes each.
 
-Phase-fair locks are 8 bytes each. Light weight locks are 2 or 4 bytes each. Initialze new locks to all bytes zero.
+Initialze locks to all bytes zero. Compile with -D STANDALONE to add benchmarking main module.  Run the benchmark with two parameters:  # of threads and lock-type:
+    0: pthread
+    1: type 1
+    2: type 2
+    3: type 3
 
 Please address any questions or concerns to the program author: Karl Malbrain, malbrain@cal.berkeley.edu.
