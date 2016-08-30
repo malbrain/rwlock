@@ -120,12 +120,12 @@ uint32_t slept = 0;
 	//  see if exclusive request is already granted
 	//	 or if it is reader phase
 
-	if( slept || !prev->bits->wrt )
-	  if( !prev->bits->xlock )
+	if( slept || !prev->wrt )
+	  if( !prev->xlock )
 		return;
 
 	slept = 1;
-	prev->bits->read = 1;
+	prev->read = 1;
 	__sync_fetch_and_sub (latch->value, SHARE);
 	__sync_fetch_and_or (latch->value, READ);
 	sys_futex( latch->value, FUTEX_WAIT_BITSET, *prev->value, NULL, NULL, QueRd );
@@ -142,8 +142,8 @@ uint32_t slept = 0;
   while( 1 ) {
 	*prev->value = __sync_fetch_and_or(latch->value, XCL);
 
-	if( !prev->bits->xlock )			// did we set XCL bit?
-	  if( !(prev->bits->share) )	{		// any readers?
+	if( !prev->xlock )			// did we set XCL bit?
+	  if( !(prev->share) )	{		// any readers?
 	    if( slept )
 		  __sync_fetch_and_sub(latch->value, WRT);
 		return;
@@ -151,7 +151,7 @@ uint32_t slept = 0;
 		  __sync_fetch_and_and(latch->value, ~XCL);
 
 	if( !slept ) {
-		prev->bits->wrt++;
+		prev->wrt++;
 		__sync_fetch_and_add(latch->value, WRT);
 	}
 
@@ -173,8 +173,8 @@ FutexLatch prev[1];
 
 	//	take write access if all bits are clear
 
-	if( !prev->bits->xlock )
-	  if( !prev->bits->share )
+	if( !prev->xlock )
+	  if( !prev->share )
 		return 1;
 	  else
 		__sync_fetch_and_and(latch->value, ~XCL);
@@ -193,11 +193,11 @@ FutexLatch prev[1];
 
 	//	alternate read/write phases
 
-	if( prev->bits->read )
+	if( prev->read )
 	  if( sys_futex( latch->value, FUTEX_WAKE_BITSET, INT_MAX, NULL, NULL, QueRd ) )
 		return;
 
-	if( prev->bits->wrt )
+	if( prev->wrt )
 	  sys_futex( latch->value, FUTEX_WAKE_BITSET, 1, NULL, NULL, QueWr );
 }
 
@@ -212,13 +212,13 @@ FutexLatch prev[1];
 
 	//	alternate read/write phases
 
-	if( prev->bits->wrt ) {
-	  if( !prev->bits->share )
+	if( prev->wrt ) {
+	  if( !prev->share )
 		sys_futex( latch->value, FUTEX_WAKE_BITSET, 1, NULL, NULL, QueWr );
 	  return;
 	}
 
-	if( prev->bits->read ) {
+	if( prev->read ) {
 	  __sync_fetch_and_and(latch->value, ~READ);
 	  sys_futex (latch->value, FUTEX_WAKE_BITSET, INT_MAX, NULL, NULL, QueRd);
 	}

@@ -33,7 +33,7 @@ typedef struct {
 	  uint16_t share:15;	// count of readers with lock
 	  uint16_t read:1;	// readers are waiting
 	  uint16_t wrt:15;	// count of writers waiting
-	} bits[1];
+	};
 	uint32_t value[1];
   };
 } FutexLatch;
