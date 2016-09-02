@@ -24,11 +24,10 @@ int sys_futex(void *addr1, int op, int val1, struct timespec *timeout, void *add
 #else
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <process.h>
 #endif
 
-#ifdef DEBUG
 int NanoCnt[1];
-#endif
 
 #ifdef unix
 #define pause() asm volatile("pause\n": : : "memory")
@@ -37,11 +36,9 @@ void lock_sleep (int cnt) {
 struct timespec ts[1];
 
 	ts->tv_sec = 0;
-	ts->tv_nsec = cnt/2;
+	ts->tv_nsec = cnt;
 	nanosleep(ts, NULL);
-#ifdef DEBUG
 	__sync_fetch_and_add(NanoCnt, 1);
-#endif
 }
 
 int lock_spin (int *cnt) {
@@ -49,220 +46,177 @@ volatile int idx;
 
 	if (!*cnt)
 	  *cnt = 8;
-	else if (*cnt < 8192)
+	else if (*cnt < 1024 * 1024)
 	  *cnt += *cnt / 4;
 
-	if (*cnt < 256 )
+	if (*cnt < 1024 )
 	  for (idx = 0; idx < *cnt; idx++)
 		pause();
-	else if (*cnt < 8192)
-		sched_yield();
 	else
 		return 1;
 
 	return 0;
 }
 #else
-// Replacement for nanosleep on Windows.
 
-void nanosleep (const uint32_t ns, HANDLE *timer)
-{
-	LARGE_INTEGER sleepTime;
+void lock_sleep (int ticks) {
+LARGE_INTEGER start[1], freq[1], next[1];
+int idx, interval;
+double conv;
 
-	sleepTime.QuadPart = ns / 100;
+	QueryPerformanceFrequency(freq);
+	QueryPerformanceCounter(next);
+	conv = (double)freq->QuadPart / 1000000000; 
 
-	if (!*timer)
-		*timer = CreateWaitableTimer (NULL, TRUE, NULL);
+	for (idx = 0; idx < ticks; idx += interval) {
+		*start = *next;
+		Sleep(0);
+		QueryPerformanceCounter(next);
+		interval = (next->QuadPart - start->QuadPart) / conv;
+	}
 
-	SetWaitableTimer (*timer, &sleepTime, 0, NULL, NULL, 0);
-	WaitForSingleObject (*timer, INFINITE);
+	_InterlockedIncrement(NanoCnt);
 }
 
 int lock_spin (uint32_t *cnt) {
 volatile int idx;
 
-	if (*cnt < 8192)
-	  *cnt += *cnt / 8;
+	if (!*cnt)
+	  *cnt = 8;
+
+	if (*cnt < 1024 * 1024)
+	  *cnt += *cnt / 4;
 
 	if (*cnt < 1024 )
 	  for (idx = 0; idx < *cnt; idx++)
 		YieldProcessor();
-	else if (*cnt < 8192)
-		SwitchToThread();
-	else
-		return 1;
+ 	else
+ 		return 1;
 
 	return 0;
 }
 #endif
 
-//	reader/writer lock implementation
+//	mutex implementation
 
-void WriteLock1 (RWLock1 *lock)
-{
-uint32_t spinCount = 0;
-#ifndef _WIN32
-	uint16_t me = __sync_fetch_and_add(lock->tix, 1);
+#ifdef unix
 
-	while (me != *lock->writers)
-	  if (lock_spin(&spinCount))
-		lock_sleep (spinCount);
-#else
-HANDLE timer = NULL;
-
-	uint16_t me = _InterlockedIncrement16(lock->tix)-1;
-
-	while (me != *lock->writers)
-	  if (lock_spin(&spinCount))
-		nanosleep(spinCount, &timer);
-
-  if (timer)
-	CloseHandle(timer);
+#ifdef linux
+uint64_t FutexCnt[1];
 #endif
-}
 
-void WriteUnlock1 (RWLock1 *lock)
-{
-RWLock1 tmp;
-
-	tmp.urw = lock->urw;
-	(*tmp.writers)++;
-	(*tmp.readers)++;
-	lock->urw = tmp.urw;
-}
-
-void ReadLock1 (RWLock1 *lock)
-{
-uint32_t spinCount = 0;
-#ifndef _WIN32
-	uint16_t me = __sync_fetch_and_add(lock->tix, 1);
-
-	while (me != *lock->readers)
-	  if (lock_spin(&spinCount))
-		lock_sleep (spinCount);
-
-	__sync_fetch_and_add(lock->readers, 1);
-#else
-HANDLE timer = NULL;
-
-	uint16_t me = _InterlockedIncrement16(lock->tix) - 1;
-
-	while (me != *lock->readers)
-	  if (lock_spin(&spinCount))
-		nanosleep(spinCount, &timer);
-
-  if (timer)
-	CloseHandle(timer);
-
-	_InterlockedIncrement16(lock->readers);
-#endif
-}
-
-void ReadUnlock1 (RWLock1 *lock)
-{
-#ifndef _WIN32
-	__sync_fetch_and_add(lock->writers, 1);
-#else
-	_InterlockedIncrement16(lock->writers);
-#endif
-}
-
-void latch_mutexlock(MutexLatch *latch)
+void mutex_lock(Mutex *latch)
 {
 uint32_t idx, waited = 0;
-MutexLatch prev[1];
+uint32_t spinCount = 0;
+Mutex prev[1];
 
- while( 1 ) {
-  for( idx = 0; idx < 100; idx++ ) {
-#ifdef unix
+  while( 1 ) {
+   spinCount = 0;
+   do {
 	*prev->value = __sync_fetch_and_or (latch->value, 1);
-#else
-	*prev->value = _InterlockedOr (latch->value, 1);
-#endif
+
+	//  did we take mutex?
+
 	if( !*prev->xcl ) {
+#ifdef linux
 	  if( waited )
-#ifdef unix
 		__sync_fetch_and_sub (latch->waiters, 1);
-#else
-		_InterlockedDecrement16 (latch->waiters);
 #endif
 	  return;
 	}
-  }
+   } while (lock_spin (&spinCount));
 
   if( !waited ) {
-#ifdef unix
+#ifdef linux
 	__sync_fetch_and_add (latch->waiters, 1);
-#else
-	_InterlockedIncrement16 (latch->waiters);
 #endif
 	*prev->waiters += 1;
 	waited++;
   }
 
 #ifdef linux
+  __sync_fetch_and_add(FutexCnt, 1);
   sys_futex ((void *)latch->value, FUTEX_WAIT, *prev->value, NULL, NULL, 0);
-#elif defined(_WIN32)
-  {
-  uint32_t spinCount = 0;
-  HANDLE timer = NULL;
-
-	if (lock_spin(&spinCount))
-	  nanosleep (spinCount, &timer);
-
-	if (timer)
-	  CloseHandle(timer);
-  }
 #else
-  {
-  uint32_t spinCount = 0;
-	if (lock_spin(&spinCount))
-	  lock_sleep (spinCount);
-  }
+  lock_sleep (spinCount);
 #endif
  }
 }
 
-int latch_mutextry(MutexLatch *latch)
+void mutex_unlock(Mutex *latch)
 {
-#ifdef unix
-	return !__sync_lock_test_and_set (latch->xcl, 1);
-#else
-	return !_InterlockedExchange16 (latch->xcl, 1);
+Mutex prev[1];
+
+	*prev->value = __sync_fetch_and_and (latch->value, 0xffff0000);
+
+#ifdef linux
+	if( *prev->waiters )
+		sys_futex( (void *)latch->value, FUTEX_WAKE, 1, NULL, NULL, 0 );
 #endif
 }
 
-void latch_releasemutex(MutexLatch *latch)
+#else
+void mutex_lock(Mutex* mutex) {
+uint32_t spinCount = 0;
+
+  while (_InterlockedOr16(mutex->xcl, 1) & 1)
+	while (*mutex->xcl & 1)
+	  if (lock_spin(&spinCount))
+		lock_sleep(spinCount);
+}
+
+void mutex_unlock(Mutex* mutex) {
+	*mutex->xcl = 0;
+}
+#endif
+
+//	simple reader-preference rwlock
+
+void WriteLock1 (RWLock1 *lock)
 {
-MutexLatch prev[1];
+uint32_t spinCount = 0;
 
-#ifdef unix
-	*prev->value = __sync_fetch_and_and (latch->value, 0xffff0000);
-#else
-	*prev->value = _InterlockedAnd (latch->value, 0xffff0000);
-#endif
+# ifndef _WIN32
+	while (!__sync_bool_compare_and_swap(lock->bits, 0, WAFLAG))
+# else
+	while (_InterlockedCompareExchange16(lock->bits, WAFLAG, 0))
+# endif
+	  if (lock_spin(&spinCount))
+		lock_sleep(spinCount);
+}
 
-	if( *prev->waiters )
-#ifdef linux
-		sys_futex( (void *)latch->value, FUTEX_WAKE, 1, NULL, NULL, 0 );
-#elif defined(_WIN32)
-  {
-  uint32_t spinCount = 0;
-  HANDLE timer = NULL;
+void WriteUnlock1 (RWLock1 *lock)
+{
+# ifndef _WIN32
+	__sync_fetch_and_and (lock->bits, ~WAFLAG);
+# else
+	_InterlockedAnd16(lock->bits, ~WAFLAG);
+# endif
+}
 
-	if (lock_spin(&spinCount))
-	  nanosleep (spinCount, &timer);
+void ReadLock1 (RWLock1 *lock)
+{
+uint32_t spinCount = 0;
 
-	if (timer)
-	  CloseHandle(timer);
-  }
-#else
-  {
-  uint32_t spinCount = 0;
-	if (lock_spin(&spinCount))
-	  lock_sleep (spinCount);
-  }
-#endif
+# ifndef _WIN32
+	__sync_fetch_and_add (lock->bits, RDINCR);
+# else
+	_InterlockedExchangeAdd16(lock->bits, RDINCR);
+# endif
+	
+	while (*lock->bits & WAFLAG)
+	  if (lock_spin(&spinCount))
+		lock_sleep(spinCount);
+}
+
+void ReadUnlock1 (RWLock1 *lock)
+{
+# ifndef _WIN32
+	__sync_fetch_and_add(lock->bits, -RDINCR);
+# else
+	_InterlockedExchangeAdd16(lock->bits, -RDINCR);
+# endif
 }
 
 //	reader/writer lock implementation
@@ -270,27 +224,26 @@ MutexLatch prev[1];
 
 void WriteLock2 (RWLock2 *lock)
 {
-	latch_mutexlock (lock->xcl);
-	latch_mutexlock (lock->wrt);
-	latch_releasemutex (lock->xcl);
+	mutex_lock(lock->xcl);
+	mutex_lock(lock->wrt);
+	mutex_unlock(lock->xcl);
 }
 
 void WriteUnlock2 (RWLock2 *lock)
 {
-	latch_releasemutex (lock->wrt);
+	mutex_unlock(lock->wrt);
 }
 
 void ReadLock2 (RWLock2 *lock)
 {
-	latch_mutexlock (lock->xcl);
-
+	mutex_lock(lock->xcl);
 #ifdef unix
 	if( !__sync_fetch_and_add (lock->readers, 1) )
 #else
 	if( !(_InterlockedIncrement16 (lock->readers)-1) )
 #endif
-	latch_mutexlock (lock->wrt);
-	latch_releasemutex (lock->xcl);
+	mutex_lock(lock->wrt);
+	mutex_unlock(lock->xcl);
 }
 
 void ReadUnlock2 (RWLock2 *lock)
@@ -300,16 +253,13 @@ void ReadUnlock2 (RWLock2 *lock)
 #else
 	if( !_InterlockedDecrement16 (lock->readers) )
 #endif
-		latch_releasemutex (lock->wrt);
+		mutex_unlock(lock->wrt);
 }
 
 void WriteLock3 (RWLock3 *lock)
 {
 uint32_t spinCount = 0;
 uint16_t w, r, tix;
-#ifdef _WIN32
-HANDLE timer = NULL;
-#endif
 
 #ifdef unix
 	tix = __sync_fetch_and_add (lock->ticket, 1);
@@ -320,30 +270,21 @@ HANDLE timer = NULL;
 
 	while( tix != lock->serving[0] )
 	  if (lock_spin(&spinCount))
-#ifdef _WIN32
-	    nanosleep (spinCount, &timer);
-#else
-		lock_sleep (spinCount);
-#endif
+	    lock_sleep (spinCount);
 
+	//	add the writer present bit and tix phase
+
+	spinCount = 0;
 	w = PRES | (tix & PHID);
 #ifdef  unix
 	r = __sync_fetch_and_add (lock->rin, w);
 #else
-	r = _InterlockedExchangeAdd16 (lock->rin, w) - w;
+	r = _InterlockedExchangeAdd16 (lock->rin, w);
 #endif
 
 	while( r != *lock->rout )
 	  if (lock_spin(&spinCount))
-#ifdef _WIN32
-	    nanosleep (spinCount, &timer);
-#else
 		lock_sleep (spinCount);
-#endif
-#ifdef _WIN32
-	if( timer )
-		CloseHandle(timer);
-#endif
 }
 
 void WriteUnlock3 (RWLock3 *lock)
@@ -360,9 +301,6 @@ void ReadLock3 (RWLock3 *lock)
 {
 uint32_t spinCount = 0;
 uint16_t w;
-#ifdef _WIN32
-HANDLE timer = NULL;
-#endif
 
 #ifdef unix
 	w = __sync_fetch_and_add (lock->rin, RINC) & MASK;
@@ -372,15 +310,7 @@ HANDLE timer = NULL;
 	if( w )
 	  while( w == (*lock->rin & MASK) )
 	   if (lock_spin(&spinCount))
-#ifndef _WIN32
 		lock_sleep (spinCount);
-#else
-	    nanosleep (spinCount, &timer);
-#endif
-#ifdef _WIN32
-	if( timer )
-		CloseHandle(timer);
-#endif
 }
 
 void ReadUnlock3 (RWLock3 *lock)
@@ -394,7 +324,6 @@ void ReadUnlock3 (RWLock3 *lock)
 
 #ifdef STANDALONE
 #include <stdio.h>
-int ThreadCnt = 0;
 
 #ifndef unix
 double getCpuTime(int type)
@@ -477,7 +406,10 @@ enum {
 } LockType;
 
 typedef struct {
+	int threadCnt;
 	int threadNo;
+	int loops;
+	int type;
 } Arg;
 
 void work (int usecs, int shuffle) {
@@ -501,58 +433,64 @@ int first, idx;
 }
 
 #ifdef _WIN32
-DWORD WINAPI launch(Arg *arg) {
+void __cdecl launch(Arg *arg) {
 #else
-
 void *launch(void *vals) {
 Arg *arg = (Arg *)vals;
 #endif
 int idx;
 
-	for( idx = 0; idx < 1000000 / ThreadCnt; idx++ ) {
-	  if (LockType == systemType)
+	for( idx = 0; idx < arg->loops; idx++ ) {
+	  if (arg->type == systemType)
 #ifdef unix
 		pthread_rwlock_rdlock(lock0), work(1, 0), pthread_rwlock_unlock(lock0);
 #else
 		AcquireSRWLockShared(lock0), work(1, 0), ReleaseSRWLockShared(lock0);
 #endif
-	  else if (LockType == RW1Type)
+	  else if (arg->type == RW1Type)
 		ReadLock1(lock1), work(1, 0), ReadUnlock1(lock1);
-	  else if (LockType == RW2Type)
+	  else if (arg->type == RW2Type)
 		ReadLock2(lock2), work(1, 0), ReadUnlock2(lock2);
-	  else if (LockType == RW3Type)
+	  else if (arg->type == RW3Type)
 		ReadLock3(lock3), work(1, 0), ReadUnlock3(lock3);
+	  else
+		work(1,0);
 	  if( (idx & 511) == 0)
-	    if (LockType == systemType)
+	    if (arg->type == systemType)
 #ifdef unix
 		  pthread_rwlock_wrlock(lock0), work(10, 1), pthread_rwlock_unlock(lock0);
 #else
 		  AcquireSRWLockExclusive(lock0), work(10, 1), ReleaseSRWLockExclusive(lock0);
 #endif
-	  	else if (LockType == RW1Type)
+	  	else if (arg->type == RW1Type)
 		  WriteLock1(lock1), work(10, 1), WriteUnlock1(lock1);
-	  	else if (LockType == RW2Type)
+	  	else if (arg->type == RW2Type)
 		  WriteLock2(lock2), work(10, 1), WriteUnlock2(lock2);
-	  	else if (LockType == RW3Type)
+	  	else if (arg->type == RW3Type)
 		  WriteLock3(lock3), work(10, 1), WriteUnlock3(lock3);
+		else
+		  work(10,1);
 #ifdef DEBUG
-	  if (!(idx % 100000))
+	  if (arg->type >= 0)
+	   if (!(idx % 100000))
 		fprintf(stderr, "Thread %d loop %d\n", arg->threadNo, idx);
 #endif
 	}
 
-#ifdef _WIN32
-	return 0;
-#else
+#ifdef DEBUG
+	if (arg->type >= 0)
+		fprintf(stderr, "Thread %d finished\n", arg->threadNo);
+#endif
+#ifndef _WIN32
 	return NULL;
 #endif
 }
 
 int main (int argc, char **argv)
 {
-double start, elapsed;
-Arg *args;
-int idx;
+double start, elapsed, overhead[3];
+int threadCnt, idx;
+Arg *args, base[1];
 
 #ifdef unix
 pthread_t *threads;
@@ -561,35 +499,50 @@ DWORD thread_id[1];
 HANDLE *threads;
 #endif
 
-	for (idx = 0; idx < 256; idx++)
-		Array[idx] = idx;
-
-	start = getCpuTime(0);
-
 	if (argc < 2) {
-		fprintf(stderr, "Usage: %s #thrds\n", argv[0]); 
+		fprintf(stderr, "Usage: %s #thrds lockType\n", argv[0]); 
+		printf("sizeof RWLock0: %d\n", (int)sizeof(lock0));
+		printf("sizeof RWLock1: %d\n", (int)sizeof(lock1));
+		printf("sizeof RWLock2: %d\n", (int)sizeof(lock2));
+		printf("sizeof RWLock3: %d\n", (int)sizeof(lock3));
 		exit(1);
 	}
 
-	ThreadCnt = atoi(argv[1]);
+	for (idx = 0; idx < 256; idx++)
+		Array[idx] = idx;
+
+	//	calculate non-lock timing
+
+	base->loops = 1000000;
+	base->threadCnt = 1;
+	base->threadNo = 0;
+	base->type = -1;
+
+	start = getCpuTime(0);
+	launch(base);
+
+	overhead[0] = getCpuTime(0) - start;
+	overhead[1] = getCpuTime(1);
+	overhead[2] = getCpuTime(2);
+
+	threadCnt = atoi(argv[1]);
 	LockType = atoi(argv[2]);
 
-	args = calloc(ThreadCnt, sizeof(Arg));
+	args = calloc(threadCnt, sizeof(Arg));
 
-	printf("sizeof RWLock0: %d\n", (int)sizeof(lock0));
-	printf("sizeof RWLock1: %d\n", (int)sizeof(lock1));
-	printf("sizeof RWLock2: %d\n", (int)sizeof(lock2));
-	printf("sizeof RWLock3: %d\n", (int)sizeof(lock3));
 #ifdef unix
-	threads = malloc (ThreadCnt * sizeof(pthread_t));
+	threads = malloc (threadCnt * sizeof(pthread_t));
 #else
-	threads = malloc (ThreadCnt * sizeof(HANDLE));
+	threads = malloc (threadCnt * sizeof(HANDLE));
 #endif
-	for (idx = 0; idx < ThreadCnt; idx++) {
+	for (idx = 0; idx < threadCnt; idx++) {
+	  args[idx].loops = 1000000 / threadCnt;
+	  args[idx].threadCnt = threadCnt;
 	  args[idx].threadNo = idx;
+	  args[idx].type = LockType;
 #ifdef _WIN32
-	  do threads[idx] = CreateThread(NULL, 0, (PTHREAD_START_ROUTINE)launch, args + idx, 0, thread_id);
-	  while ((int64_t)threads[idx] == -1 && (SwitchToThread(), 1));
+	  while ( (int64_t)(threads[idx] = (HANDLE)_beginthread(launch, 65536, args + idx)) < 0LL )
+		fprintf(stderr, "Unable to create thread %d, errno = %d\n", idx, errno);
 #else
 	  if (pthread_create(threads + idx, NULL, launch, (void *)(args + idx)))
 		fprintf(stderr, "Unable to create thread %d, errno = %d\n", idx, errno);
@@ -600,11 +553,11 @@ HANDLE *threads;
 	// 	wait for termination
 
 #ifdef unix
-	for (idx = 0; idx < ThreadCnt; idx++)
+	for (idx = 0; idx < threadCnt; idx++)
 		pthread_join (threads[idx], NULL);
 #else
 
-	for (idx = 0; idx < ThreadCnt; idx++) {
+	for (idx = 0; idx < threadCnt; idx++) {
 		WaitForSingleObject (threads[idx], INFINITE);
 		CloseHandle(threads[idx]);
 	}
@@ -613,15 +566,22 @@ HANDLE *threads;
 	  if (Array[idx] != (unsigned char)(Array[(idx+1) % 256] - 1))
 		fprintf (stderr, "Array out of order\n");
 
-	elapsed = getCpuTime(0) - start;
+	elapsed = getCpuTime(0) - start - overhead[0];
+	if (elapsed < 0)
+		elapsed = 0;
 	fprintf(stderr, " real %.3fus\n", elapsed);
-	elapsed = getCpuTime(1);
+	elapsed = getCpuTime(1) - overhead[1];
+	if (elapsed < 0)
+		elapsed = 0;
 	fprintf(stderr, " user %.3fus\n", elapsed);
-	elapsed = getCpuTime(2);
+	elapsed = getCpuTime(2) - overhead[2];
+	if (elapsed < 0)
+		elapsed = 0;
 	fprintf(stderr, " sys  %.3fus\n", elapsed);
-#ifdef DEBUG
-	fprintf(stderr, " nano %d\n", NanoCnt[0]);
+#ifdef linux
+	fprintf(stderr, " futex waits: %lld\n", FutexCnt[0]);
 #endif
+	fprintf(stderr, " nanosleeps %d\n", NanoCnt[0]);
 }
 #endif
 

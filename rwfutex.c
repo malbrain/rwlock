@@ -17,26 +17,32 @@ int sys_futex(void *addr1, int op, int val1, struct timespec *timeout, void *add
 }
 
 #include "rwfutex.h"
+uint64_t FutexCnt[1];
 
 //  a phase fair reader/writer lock implementation
 
 void WriteLock (RWLock *lock)
 {
+uint32_t spinCount = 0;
 uint16_t w, r, tix;
 uint32_t prev;
 
 	tix = __sync_fetch_and_add (lock->ticket, 1);
 
-	// wait for our write ticket to come up
+	// wait for our ticket to come up in serving
 
 	while( 1 ) {
 		prev = lock->rw[1];
 		if( tix == (uint16_t)prev )
 		  break;
+
+		// add ourselves to the waiting for write ticket queue
+
+  		__sync_fetch_and_add(FutexCnt, 1);
 		sys_futex( (void *)&lock->rw[1], FUTEX_WAIT_BITSET, prev, NULL, NULL, QueWr );
 	}
 
-	// wait for existing readers to drain while new readers queue
+	// wait for existing readers to drain while allowing new readers queue
 
 	w = PRES | (tix & PHID);
 	r = __sync_fetch_and_add (lock->rin, w);
@@ -45,6 +51,10 @@ uint32_t prev;
 		prev = lock->rw[0];
 		if( r == (uint16_t)(prev >> 16))
 		  break;
+
+		// we're the only writer waiting on the readers ticket number
+
+  		__sync_fetch_and_add(FutexCnt, 1);
 		sys_futex( (void *)&lock->rw[0], FUTEX_WAIT_BITSET, prev, NULL, NULL, QueWr );
 	}
 }
@@ -56,8 +66,6 @@ void WriteUnlock (RWLock *lock)
 
 	__sync_fetch_and_and (lock->rin, ~MASK);
 	lock->serving[0]++;
-
-	// are readers waiting?
 
 	if( (*lock->rin & ~MASK) != (*lock->rout & ~MASK) )
 	  if( sys_futex( (void *)&lock->rw[0], FUTEX_WAKE_BITSET, INT_MAX, NULL, NULL, QueRd ) )
@@ -76,6 +84,7 @@ void WriteUnlock (RWLock *lock)
 
 void ReadLock (RWLock *lock)
 {
+uint32_t spinCount = 0;
 uint32_t prev;
 uint16_t w;
 
@@ -84,8 +93,9 @@ uint16_t w;
 	if( w )
 	  while( 1 ) {
 		prev = lock->rw[0];
-		if( w != ((uint16_t)prev & MASK))
+		if( w != (prev & MASK))
 		  break;
+  		__sync_fetch_and_add(FutexCnt, 1);
 		sys_futex( (void *)&lock->rw[0], FUTEX_WAIT_BITSET, prev, NULL, NULL, QueRd );
 	  }
 }
@@ -95,10 +105,12 @@ void ReadUnlock (RWLock *lock)
 	__sync_fetch_and_add (lock->rout, RINC);
 
 	// is a writer waiting for this reader to finish?
-	// or is a writer waiting for reader cycle to finish?
 
 	if( *lock->rin & PRES )
 	  sys_futex( (void *)&lock->rw[0], FUTEX_WAKE_BITSET, 1, NULL, NULL, QueWr );
+
+	// is a writer waiting for reader cycle to finish?
+
 	else if( *lock->ticket != *lock->serving )
 	  sys_futex( (void *)&lock->rw[1], FUTEX_WAKE_BITSET, INT_MAX, NULL, NULL, QueWr );
 }
@@ -109,54 +121,71 @@ void ReadUnlock (RWLock *lock)
 //	wait until write lock mode is clear
 //	and add 1 to the share count
 
-void futex_readlock(FutexLatch *latch)
+void futex_readlock(FutexLock *lock)
 {
-FutexLatch prev[1];
-uint32_t slept = 0;
+uint32_t waited = 0;
+FutexLock prev[1];
 
   while( 1 ) {
-	*prev->value = __sync_fetch_and_add (latch->value, SHARE);
+	// increment reader count
 
-	//  see if exclusive request is already granted
+	*prev->longs = __sync_fetch_and_add (lock->longs, SHARE);
+
+	//  see if exclusive request is not already granted
 	//	 or if it is reader phase
 
-	if( slept || !prev->wrt )
-	  if( !prev->xlock )
+	if( waited || !lock->wrt )
+	  if( !lock->xlock )
 		return;
 
-	slept = 1;
+	//	wait for writer to release lock
+
+	 __sync_fetch_and_sub (lock->longs, SHARE);
+	 __sync_fetch_and_or (lock->longs, READ);
+
+	if( lock->xlock && !prev->share )
+	  sys_futex( (void *)lock->longs, FUTEX_WAKE_BITSET, INT_MAX, NULL, NULL, QueWr );
+
 	prev->read = 1;
-	__sync_fetch_and_sub (latch->value, SHARE);
-	__sync_fetch_and_or (latch->value, READ);
-	sys_futex( latch->value, FUTEX_WAIT_BITSET, *prev->value, NULL, NULL, QueRd );
+	waited = 1;
+
+	__sync_fetch_and_add(FutexCnt, 1);
+	sys_futex( (void *)lock->longs, FUTEX_WAIT_BITSET, *prev->longs, NULL, NULL, QueRd );
   }
 }
 
-//	wait for other read and write latches to relinquish
+//	wait for other read and write locks to release
 
-void futex_writelock(FutexLatch *latch)
+void futex_writelock(FutexLock *lock)
 {
-FutexLatch prev[1];
-uint32_t slept = 0;
+uint32_t slept = 0, ours = 0;
+FutexLock temp[1];
+
+  ours = 0;
 
   while( 1 ) {
-	*prev->value = __sync_fetch_and_or(latch->value, XCL);
+	*temp->longs = *lock->longs;
 
-	if( !prev->xlock )			// did we set XCL bit?
-	  if( !(prev->share) )	{		// any readers?
+	if (!ours)
+	  ours = ~__sync_fetch_and_or(lock->longs, XCL) & XCL;
+
+	if( ours )			// did we set XCL bit?
+	  if( !temp->share )	{	// any active readers?
 	    if( slept )
-		  __sync_fetch_and_sub(latch->value, WRT);
+		  __sync_fetch_and_sub(lock->shorts, WRT);
 		return;
-	  } else
-		  __sync_fetch_and_and(latch->value, ~XCL);
+	  }
 
 	if( !slept ) {
-		prev->wrt++;
-		__sync_fetch_and_add(latch->value, WRT);
+	  temp->shorts[0] = __sync_fetch_and_add(lock->shorts, WRT) + WRT;
+	  slept = 1;
 	}
 
-	sys_futex (latch->value, FUTEX_WAIT_BITSET, *prev->value, NULL, NULL, QueWr);
-	slept = 1;
+	if (ours && !lock->share)
+		continue;
+
+	__sync_fetch_and_add(FutexCnt, 1);
+	sys_futex ((void *)lock->longs, FUTEX_WAIT_BITSET, *temp->longs, NULL, NULL, QueWr);
   }
 }
 
@@ -165,11 +194,11 @@ uint32_t slept = 0;
 //	return 1 if obtained,
 //		0 otherwise
 
-int futex_writetry(FutexLatch *latch)
+int futex_writetry(FutexLock *lock)
 {
-FutexLatch prev[1];
+FutexLock prev[1];
 
-	*prev->value = __sync_fetch_and_or(latch->value, XCL);
+	*prev->longs = __sync_fetch_and_or(lock->longs, XCL);
 
 	//	take write access if all bits are clear
 
@@ -177,7 +206,7 @@ FutexLatch prev[1];
 	  if( !prev->share )
 		return 1;
 	  else
-		__sync_fetch_and_and(latch->value, ~XCL);
+		__sync_fetch_and_and(lock->longs, ~XCL);
 
 	return 0;
 }
@@ -185,48 +214,45 @@ FutexLatch prev[1];
 //	clear write mode
 //	wake up sleeping readers
 
-void futex_releasewrite(FutexLatch *latch)
+void futex_releasewrite(FutexLock *lock)
 {
-FutexLatch prev[1];
+FutexLock prev[1];
 
-	*prev->value = __sync_fetch_and_and(latch->value, ~(XCL | READ));
+	*prev->longs = __sync_fetch_and_and(lock->longs, ~(XCL | READ));
 
 	//	alternate read/write phases
 
-	if( prev->read )
-	  if( sys_futex( latch->value, FUTEX_WAKE_BITSET, INT_MAX, NULL, NULL, QueRd ) )
-		return;
+	//	are readers waiting?
 
-	if( prev->wrt )
-	  sys_futex( latch->value, FUTEX_WAKE_BITSET, 1, NULL, NULL, QueWr );
+	if( prev->read ) {
+	  if( sys_futex( (void *)lock->longs, FUTEX_WAKE_BITSET, INT_MAX, NULL, NULL, QueRd ) )
+		return;
+	}
+
+	if( lock->wrt )
+	  sys_futex( (void *)lock->longs, FUTEX_WAKE_BITSET, INT_MAX, NULL, NULL, QueWr );
 }
 
 //	decrement reader count
 //	wake up sleeping writers
 
-void futex_releaseread(FutexLatch *latch)
+void futex_releaseread(FutexLock *lock)
 {
-FutexLatch prev[1];
+FutexLock prev[1];
 
-	*prev->value = __sync_sub_and_fetch(latch->value, SHARE);
+	*prev->longs = __sync_sub_and_fetch(lock->longs, SHARE);
 
 	//	alternate read/write phases
 
-	if( prev->wrt ) {
+	if( prev->wrt || prev->xlock ) {
 	  if( !prev->share )
-		sys_futex( latch->value, FUTEX_WAKE_BITSET, 1, NULL, NULL, QueWr );
+		sys_futex( (void *)lock->longs, FUTEX_WAKE_BITSET, INT_MAX, NULL, NULL, QueWr );
 	  return;
-	}
-
-	if( prev->read ) {
-	  __sync_fetch_and_and(latch->value, ~READ);
-	  sys_futex (latch->value, FUTEX_WAKE_BITSET, INT_MAX, NULL, NULL, QueRd);
 	}
 }
 
 #ifdef STANDALONE
 #include <stdio.h>
-int ThreadCnt = 0;
 
 #include <time.h>
 #include <sys/resource.h>
@@ -257,7 +283,7 @@ struct timeval tv[1];
 
 unsigned char Array[256] __attribute__((aligned(64)));
 pthread_rwlock_t syslock[1] = {PTHREAD_RWLOCK_INITIALIZER};
-FutexLatch futexlatch[1];
+FutexLock futexlock[1];
 RWLock rwlock[1];
 
 enum {
@@ -268,6 +294,8 @@ enum {
 
 typedef struct {
 	int threadNo;
+	int loops;
+	int type;
 } Arg;
 
 void work (int usecs, int shuffle) {
@@ -290,75 +318,93 @@ int first, idx;
 #endif
 }
 
-void *launch(void *arg) {
-Arg *info = (Arg *)arg;
+void *launch(void *info) {
+Arg *arg = (Arg *)info;
 int idx;
 
-	for( idx = 0; idx < 1000000 / ThreadCnt; idx++ ) {
-		if (LockType == systemType)
+	for( idx = 0; idx < arg->loops; idx++ ) {
+		if (arg->type == systemType)
 		  pthread_rwlock_rdlock(syslock), work(1, 0), pthread_rwlock_unlock(syslock);
-		else if (LockType == futexType)
-		  futex_readlock(futexlatch), work(1, 0), futex_releaseread(futexlatch);
-		else if (LockType == RWType)
+		else if (arg->type == futexType)
+		  futex_readlock(futexlock), work(1, 0), futex_releaseread(futexlock);
+		else if (arg->type == RWType)
 		  ReadLock(rwlock), work(1, 0), ReadUnlock(rwlock);
 		else
 		  work(1, 0);
 
 		if( (idx & 511) == 0)
-		  if (LockType == systemType)
+		  if (arg->type == systemType)
 		    pthread_rwlock_wrlock(syslock), work(10, 1), pthread_rwlock_unlock(syslock);
-		  else if (LockType == futexType)
-			futex_writelock(futexlatch), work(10, 1), futex_releasewrite(futexlatch);
-		  else if (LockType == RWType)
+		  else if (arg->type == futexType)
+			futex_writelock(futexlock), work(10, 1), futex_releasewrite(futexlock);
+		  else if (arg->type == RWType)
 			WriteLock(rwlock), work(10, 1), WriteUnlock(rwlock);
 		  else
-			work(1, 0);
+			work(10, 0);
 #ifdef DEBUG
+	  if (arg->type >= 0)
 		if (!(idx % 100000))
-			fprintf(stderr, "Thread %d loop %d\n", info->threadNo, idx);
+			fprintf(stderr, "Thread %d loop %d\n", arg->threadNo, idx);
 #endif
 	}
 
+#ifdef DEBUG
+	fprintf(stderr, "Thread %d finished\n", arg->threadNo);
+#endif
 	return NULL;
 }
 
 int main (int argc, char **argv)
 {
+double start, elapsed, overhead[3];
+int idx, threadCnt, lockType;
 pthread_t thread_id[1];
 pthread_t *threads;
-double start, elapsed;
-Arg *args;
-int idx;
+Arg *args, base[1];
 
 	for (idx = 0; idx < 256; idx++)
 		Array[idx] = idx;
 
-	start = getCpuTime(0);
-
 	if (argc < 2) {
 		fprintf(stderr, "Usage: %s #thrds type\n", argv[0]); 
+		printf("sizeof SystemLatch: %d\n", (int)sizeof(syslock));
+		printf("sizeof FutexLock: %d\n", (int)sizeof(FutexLock));
+		printf("sizeof RWLock: %d\n", (int)sizeof(RWLock));
 		exit(1);
 	}
 
-	ThreadCnt = atoi(argv[1]);
-	LockType = atoi(argv[2]);
+	//	calculate non-lock timing
 
-	args = calloc(ThreadCnt, sizeof(Arg));
+	base->loops = 1000000;
+	base->threadNo = 0;
+	base->type = -1;
 
-	printf("sizeof SystemLatch: %d\n", (int)sizeof(syslock));
-	printf("sizeof FutexLatch: %d\n", (int)sizeof(FutexLatch));
-	printf("sizeof RWLock: %d\n", (int)sizeof(RWLock));
-	threads = malloc (ThreadCnt * sizeof(pthread_t));
+	start = getCpuTime(0);
+	launch(base);
 
-	for (idx = 0; idx < ThreadCnt; idx++) {
+	overhead[0] = getCpuTime(0) - start;
+	overhead[1] = getCpuTime(1);
+	overhead[2] = getCpuTime(2);
+
+	threadCnt = atoi(argv[1]);
+	lockType = atoi(argv[2]);
+
+	args = calloc(threadCnt, sizeof(Arg));
+
+	threads = malloc (threadCnt * sizeof(pthread_t));
+
+	for (idx = 0; idx < threadCnt; idx++) {
+	  args[idx].loops = 1000000/threadCnt;
+	  args[idx].type = lockType;
 	  args[idx].threadNo = idx;
+
 	  if (pthread_create(threads + idx, NULL, launch, args + idx))
 		fprintf(stderr, "Unable to create thread %d, errno = %d\n", idx, errno);
 	}
 
 	// 	wait for termination
 
-	for( idx = 0; idx < ThreadCnt; idx++ )
+	for( idx = 0; idx < threadCnt; idx++ )
 		pthread_join (threads[idx], NULL);
 
 	for( idx = 0; idx < 256; idx++)
@@ -366,10 +412,20 @@ int idx;
 		fprintf (stderr, "Array out of order\n");
 
 	elapsed = getCpuTime(0) - start;
+	elapsed -= overhead[0];
+	if (elapsed < 0)
+		elapsed = 0;
 	fprintf(stderr, " real %.3fus\n", elapsed);
 	elapsed = getCpuTime(1);
+	elapsed -= overhead[1];
+	if (elapsed < 0)
+		elapsed = 0;
 	fprintf(stderr, " user %.3fus\n", elapsed);
 	elapsed = getCpuTime(2);
+	elapsed -= overhead[2];
+	if (elapsed < 0)
+		elapsed = 0;
 	fprintf(stderr, " sys  %.3fus\n", elapsed);
+	fprintf(stderr, " futex waits: %lld\n", FutexCnt[0]);
 }
 #endif

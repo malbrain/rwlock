@@ -1,20 +1,18 @@
 // reader-writer FIFO lock -- type 1
 
-typedef volatile union {
-  struct {
-	uint16_t readers[1];
-	uint16_t writers[1];
-	uint16_t tix[1];
-  };
-  uint32_t urw;
+typedef volatile struct {
+  uint16_t bits[1];
 } RWLock1;
+
+#define WAFLAG 0x1
+#define RDINCR 0x2
 
 void writeLock1 (RWLock1 *lock);
 void writeUnlock1 (RWLock1 *lock);
 void readLock1 (RWLock1 *lock);
 void readUnlock1 (RWLock1 *lock);
 
-// reader-writer FIFO lock -- type 2
+// reader-writer mutex lock (Neither FIFO nor Fair) -- type 2
 
 typedef volatile union {
   struct {
@@ -22,11 +20,14 @@ typedef volatile union {
 	uint16_t waiters[1];
   };
   uint32_t value[1];
-} MutexLatch;
+} Mutex;
+
+void mutex_lock(Mutex* mutex);
+void mutex_unlock(Mutex* mutex);
 
 typedef struct {
-  MutexLatch xcl[1];
-  MutexLatch wrt[1];
+  Mutex xcl[1];
+  Mutex wrt[1];
   uint16_t readers[1];
 } RWLock2;
 
@@ -35,7 +36,7 @@ void writeUnlock2 (RWLock2 *lock);
 void readLock2 (RWLock2 *lock);
 void readUnlock2 (RWLock2 *lock);
 
-// reader-writer FIFO lock -- type 3
+// reader-writer Phase Fair/FIFO lock -- type 3
 
 typedef volatile struct {
 	uint16_t rin[1];
