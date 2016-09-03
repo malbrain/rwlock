@@ -9,7 +9,7 @@
 
 #include "readerwriter.h"
 
-#ifdef linux
+#ifdef FUTEX
 #include <linux/futex.h>
 #define SYS_futex 202
 
@@ -101,7 +101,7 @@ volatile int idx;
 
 #ifdef unix
 
-#ifdef linux
+#ifdef FUTEX
 uint64_t FutexCnt[1];
 #endif
 
@@ -558,7 +558,7 @@ HANDLE *threads;
 	if (elapsed < 0)
 		elapsed = 0;
 	fprintf(stderr, " sys  %.3fus\n", elapsed);
-#ifdef linux
+#ifdef FUTEX
 	fprintf(stderr, " futex waits: %lld\n", FutexCnt[0]);
 #endif
 	fprintf(stderr, " nanosleeps %d\n", NanoCnt[0]);
