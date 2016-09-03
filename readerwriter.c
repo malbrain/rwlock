@@ -105,69 +105,49 @@ volatile int idx;
 uint64_t FutexCnt[1];
 #endif
 
-void mutex_lock(Mutex *latch)
-{
-uint32_t idx, waited = 0;
+void mutex_lock(Mutex* mutex) {
 uint32_t spinCount = 0;
-Mutex prev[1];
+uint32_t prev;
 
-  while( 1 ) {
-   spinCount = 0;
-   do {
-	*prev->value = __sync_fetch_and_or (latch->value, 1);
-
-	//  did we take mutex?
-
-	if( !*prev->xcl ) {
-#ifdef linux
-	  if( waited )
-		__sync_fetch_and_sub (latch->waiters, 1);
-#endif
-	  return;
-	}
-   } while (lock_spin (&spinCount));
-
-  if( !waited ) {
-#ifdef linux
-	__sync_fetch_and_add (latch->waiters, 1);
-#endif
-	*prev->waiters += 1;
-	waited++;
-  }
-
-#ifdef linux
-  __sync_fetch_and_add(FutexCnt, 1);
-  sys_futex ((void *)latch->value, FUTEX_WAIT, *prev->value, NULL, NULL, 0);
+  while (__sync_fetch_and_or(mutex->lock, 1) & 1)
+	while (*mutex->lock)
+	  if (lock_spin (&spinCount)) {
+#ifndef FUTEX
+		lock_sleep(spinCount);
 #else
-  lock_sleep (spinCount);
+		// increment futex waiting
+
+  		__sync_fetch_and_add(FutexCnt, 1);
+		prev = __sync_add_and_fetch(mutex->futex, 1) << 16 | 1;
+		sys_futex ((void *)mutex->bits, FUTEX_WAIT, prev, NULL, NULL, 0);
 #endif
- }
+	  }
 }
 
-void mutex_unlock(Mutex *latch)
-{
-Mutex prev[1];
-
-	*prev->value = __sync_fetch_and_and (latch->value, 0xffff0000);
-
-#ifdef linux
-	if( *prev->waiters )
-		sys_futex( (void *)latch->value, FUTEX_WAKE, 1, NULL, NULL, 0 );
+void mutex_unlock(Mutex* mutex) {
+	asm volatile ("" ::: "memory");
+	*mutex->lock = 0;
+#ifdef FUTEX
+	if (*mutex->futex) {
+		__sync_fetch_and_sub(mutex->futex, 1);
+ 		sys_futex( (void *)mutex->bits, FUTEX_WAKE, 1, NULL, NULL, 0);
+	}
 #endif
 }
+
 
 #else
 void mutex_lock(Mutex* mutex) {
 uint32_t spinCount = 0;
 
-  while (_InterlockedOr16(mutex->xcl, 1) & 1)
-	while (*mutex->xcl & 1)
+  while (_InterlockedOr8(mutex->lock, 1) & 1)
+	while (*mutex->lock & 1)
 	  if (lock_spin(&spinCount))
 		lock_sleep(spinCount);
 }
 
 void mutex_unlock(Mutex* mutex) {
-	*mutex->xcl = 0;
+	*mutex->lock = 0;
 }
 #endif
 

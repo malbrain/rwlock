@@ -15,11 +15,15 @@ void readUnlock1 (RWLock1 *lock);
 // reader-writer mutex lock (Neither FIFO nor Fair) -- type 2
 
 typedef volatile union {
+#ifdef FUTEX
   struct {
-	uint16_t xcl[1];
-	uint16_t waiters[1];
+	uint16_t lock[1];
+	uint16_t futex[1];
   };
-  uint32_t value[1];
+  uint32_t bits[1];
+#else
+  char lock[1];
+#endif
 } Mutex;
 
 void mutex_lock(Mutex* mutex);

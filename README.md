@@ -50,28 +50,66 @@ Sample linux 3.10.0-123.9.3.el7.x86_64 output: (times are in usecs per call of l
      nanosleeps 1018699
 
     [root@test7x64 xlink]# ./readerwriter 2 2
-     real 1.109us
-     user 2.072us
-     sys  0.046us
-     futex waits: 7947
+     real 1.359us
+     user 2.720us
+     sys  0.001us
+     futex waits: 0
+     nanosleeps 4
 
     [root@test7x64 xlink]# ./readerwriter 20 2
-     real 0.723us
-     user 2.053us
-     sys  0.433us
-     futex waits: 41750
+     real 0.746us
+     user 2.933us
+     sys  0.004us
+     futex waits: 0
+     nanosleeps 2352
 
     [root@test7x64 xlink]# ./readerwriter 200 2
-     real 1.058us
-     user 2.102us
-     sys  1.936us
-     futex waits: 265360
+     real 0.694us
+     user 2.731us
+     sys  0.015us
+     futex waits: 0
+     nanosleeps 15612
 
     [root@test7x64 xlink]# ./readerwriter 2000 2
-     real 1.378us
-     user 2.196us
-     sys  3.075us
-     futex waits: 374353
+     real 0.744us
+     user 2.778us
+     sys  0.090us
+     futex waits: 0
+     nanosleeps 30071
+
+Sample 64 bit linux FUTEX version:
+
+    [root@test7x64 xlink]# cc -o readerwriter -g -O3 -D STANDALONE -D FUTEX /home/devel/xlink17/cloud/source/readerwriter.c -lpthread
+
+    [root@test7x64-petzent-com xlink]# ./readerwriter 2 2
+     real 0.995us
+     user 1.991us
+     sys  0.000us
+     futex waits: 0
+     nanosleeps 0
+
+    [root@test7x64 xlink]# ./readerwriter 20 2
+     real 0.558us
+     user 2.112us
+     sys  0.063us
+     futex waits: 14779
+     nanosleeps 0
+
+    [root@test7x64 xlink]# ./readerwriter 200 2
+     real 0.776us
+     user 2.208us
+     sys  0.875us
+     futex waits: 394389
+     nanosleeps 0
+
+    [root@test7x64 xlink]# ./readerwriter 2000 2
+     real 0.738us
+     user 2.193us
+     sys  0.677us
+     futex waits: 305082
+     nanosleeps 0
+
+Sample Brandenburg Phase-Fair FIFO 64 bit linux:
 
     [root@test7x64 xlink]# ./readerwriter 2 3
      real 1.283us
