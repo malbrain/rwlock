@@ -25,8 +25,8 @@ typedef enum {
 	CONTESTED
 } MutexState;
 
-typedef volatile struct {
-	MutexState state[1];
+typedef struct {
+	volatile MutexState state[1];
 } Mutex;
 
 typedef struct {

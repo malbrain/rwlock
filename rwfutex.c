@@ -19,6 +19,8 @@ int sys_futex(void *addr1, int op, int val1, struct timespec *timeout, void *add
 #include "rwfutex.h"
 uint64_t FutexCnt[1];
 
+#define pause() asm volatile("pause\n": : : "memory")
+
 int lock_spin (int *cnt) {
 volatile int idx;
 
@@ -37,18 +39,21 @@ volatile int idx;
 }
 
 void mutex_lock(Mutex *mutex) {
-MutexState c, nxt =  LOCKED;
+MutexState nxt =  LOCKED;
+uint32_t spinCount = 0;
 
-  while ((c = __sync_val_compare_and_swap(mutex->state, FREE, nxt)) != FREE)
-  {
-    if (c == LOCKED)
-      if (__sync_val_compare_and_swap(mutex->state, LOCKED, CONTESTED) == FREE)
-	    continue;
+  while (__sync_val_compare_and_swap(mutex->state, FREE, nxt) != FREE)
+	while (*mutex->state != FREE)
+	  if (lock_spin (&spinCount)) {
+		if (*mutex->state == LOCKED)
+    	  if (__sync_val_compare_and_swap(mutex->state, LOCKED, CONTESTED) == FREE)
+			break;
 
-	__sync_fetch_and_add(FutexCnt, 1);
-    sys_futex((void *)mutex->state, FUTEX_WAIT, CONTESTED, NULL, NULL, 0);
-	nxt = CONTESTED;
-  }
+  		__sync_fetch_and_add(FutexCnt, 1);
+		sys_futex((void *)mutex->state, FUTEX_WAIT, CONTESTED, NULL, NULL, 0);
+		nxt = CONTESTED;
+		break;
+	  }
 }
 
 void mutex_unlock(Mutex* mutex) {

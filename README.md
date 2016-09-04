@@ -128,8 +128,8 @@ rwfutex.c:	Four Linux only versions that utilize futex calls on contention.
 
     0: type 0   pthread/SRW system rwlocks
     1: type 1   Not FIFO nor Phase-Fair
-    2: type 2	FIFO and Phase-Fair Brandenburg futex lock
-    3: type 3	Mutex based rwlock
+    2: type 2	FIFO and Phase-Fair Brandenburg futex rwlock
+    3: type 3	Not FIFO nor Phase-Fair Mutex based rwlock
 
     0: sizeof SystemLatch: 56
     1: sizeof FutexLock: 4
@@ -189,27 +189,27 @@ Sample output: (times are in usecs per call of lock/unlock pair)
      futex waits: 7563596
 
     [root@test7x64 xlink]# ./rwfutex 2 3
-     real 1.150us
-     user 2.147us
-     sys  0.050us
-     futex waits: 7802
+     real 1.004us
+     user 2.007us
+     sys  0.000us
+     futex waits: 4
 
     [root@test7x64 xlink]# ./rwfutex 20 3
-     real 1.345us
-     user 2.234us
-     sys  0.037us
-     futex waits: 10303
+     real 0.617us
+     user 2.100us
+     sys  0.000us
+     futex waits: 717
 
     [root@test7x64 xlink]# ./rwfutex 200 3
-     real 1.317us
-     user 2.253us
-     sys  0.052us
-     futex waits: 11247
+     real 0.568us
+     user 2.153us
+     sys  0.012us
+     futex waits: 1016
 
     [root@test7x64 xlink]# ./rwfutex 2000 3
-     real 1.071us
-     user 2.234us
-     sys  0.099us
-     futex waits: 12821
+     real 0.582us
+     user 2.121us
+     sys  0.064us
+     futex waits: 1336
 
 Please address any questions or concerns to the program author: Karl Malbrain, malbrain@cal.berkeley.edu.
