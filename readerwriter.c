@@ -9,16 +9,6 @@
 
 #include "readerwriter.h"
 
-#ifdef FUTEX
-#include <linux/futex.h>
-#define SYS_futex 202
-
-int sys_futex(void *addr1, int op, int val1, struct timespec *timeout, void *addr2, int val3)
-{
-	return syscall(SYS_futex, addr1, op, val1, timeout, addr2, val3);
-}
-#endif
-
 #ifndef _WIN32
 #include <sched.h>
 #else
@@ -101,38 +91,19 @@ volatile int idx;
 
 #ifdef unix
 
-#ifdef FUTEX
-uint64_t FutexCnt[1];
-#endif
-
 void mutex_lock(Mutex* mutex) {
 uint32_t spinCount = 0;
 uint32_t prev;
 
   while (__sync_fetch_and_or(mutex->lock, 1) & 1)
 	while (*mutex->lock)
-	  if (lock_spin (&spinCount)) {
-#ifndef FUTEX
+	  if (lock_spin (&spinCount))
 		lock_sleep(spinCount);
-#else
-		// increment futex waiting
-
-  		__sync_fetch_and_add(FutexCnt, 1);
-		prev = __sync_add_and_fetch(mutex->futex, 1) << 16 | 1;
-		sys_futex ((void *)mutex->bits, FUTEX_WAIT, prev, NULL, NULL, 0);
-#endif
-	  }
 }
 
 void mutex_unlock(Mutex* mutex) {
 	asm volatile ("" ::: "memory");
 	*mutex->lock = 0;
-#ifdef FUTEX
-	if (*mutex->futex) {
-		__sync_fetch_and_sub(mutex->futex, 1);
- 		sys_futex( (void *)mutex->bits, FUTEX_WAKE, 1, NULL, NULL, 0);
-	}
-#endif
 }
 
 
@@ -151,17 +122,24 @@ void mutex_unlock(Mutex* mutex) {
 }
 #endif
 
-//	simple reader-preference rwlock
+//	simple Phase-Fair FIFO rwlock
 
 void WriteLock1 (RWLock1 *lock)
 {
+Counter prev[1], next[1];
 uint32_t spinCount = 0;
 
+	do {
+	  *prev->bits = *lock->requests->bits;
+	  *next->bits = *prev->bits;
+	  next->writer[0]++;
 # ifndef _WIN32
-	while (!__sync_bool_compare_and_swap(lock->bits, 0, WAFLAG))
+	} while (!__sync_bool_compare_and_swap(lock->requests->bits, *prev->bits, *next->bits));
 # else
-	while (_InterlockedCompareExchange16(lock->bits, WAFLAG, 0))
+	} while (_InterlockedCompareExchange(lock->requests->bits, *next->bits, *prev->bits) != *prev->bits);
 # endif
+
+	while (lock->completions->bits[0] != prev->bits[0])
 	  if (lock_spin(&spinCount))
 		lock_sleep(spinCount);
 }
@@ -169,23 +147,24 @@ uint32_t spinCount = 0;
 void WriteUnlock1 (RWLock1 *lock)
 {
 # ifndef _WIN32
-	__sync_fetch_and_and (lock->bits, ~WAFLAG);
+	__sync_fetch_and_add (lock->completions->writer, 1);
 # else
-	_InterlockedAnd16(lock->bits, ~WAFLAG);
+	_InterlockedExchangeAdd16(lock->completions->writer, 1);
 # endif
 }
 
 void ReadLock1 (RWLock1 *lock)
 {
 uint32_t spinCount = 0;
+Counter prev[1];
 
 # ifndef _WIN32
-	__sync_fetch_and_add (lock->bits, RDINCR);
+	*prev->bits = __sync_fetch_and_add (lock->requests->bits, RDINCR);
 # else
-	_InterlockedExchangeAdd16(lock->bits, RDINCR);
+	*prev->bits =_InterlockedExchangeAdd(lock->requests->bits, RDINCR);
 # endif
 	
-	while (*lock->bits & WAFLAG)
+	while (*lock->completions->writer != *prev->writer)
 	  if (lock_spin(&spinCount))
 		lock_sleep(spinCount);
 }
@@ -193,9 +172,9 @@ uint32_t spinCount = 0;
 void ReadUnlock1 (RWLock1 *lock)
 {
 # ifndef _WIN32
-	__sync_fetch_and_add(lock->bits, -RDINCR);
+	__sync_fetch_and_add (lock->completions->reader, 1);
 # else
-	_InterlockedExchangeAdd16(lock->bits, -RDINCR);
+	_InterlockedExchangeAdd16(lock->completions->reader, 1);
 # endif
 }
 
@@ -222,14 +201,15 @@ void ReadLock2 (RWLock2 *lock)
 #else
 	if( !(_InterlockedIncrement16 (lock->readers)-1) )
 #endif
-	mutex_lock(lock->wrt);
+		mutex_lock(lock->wrt);
+
 	mutex_unlock(lock->xcl);
 }
 
 void ReadUnlock2 (RWLock2 *lock)
 {
 #ifdef unix
-	if( __sync_fetch_and_sub (lock->readers, 1) == 1 )
+	if( !__sync_sub_and_fetch (lock->readers, 1) )
 #else
 	if( !_InterlockedDecrement16 (lock->readers) )
 #endif
@@ -558,9 +538,6 @@ HANDLE *threads;
 	if (elapsed < 0)
 		elapsed = 0;
 	fprintf(stderr, " sys  %.3fus\n", elapsed);
-#ifdef FUTEX
-	fprintf(stderr, " futex waits: %lld\n", FutexCnt[0]);
-#endif
 	fprintf(stderr, " nanosleeps %d\n", NanoCnt[0]);
 }
 #endif

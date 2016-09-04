@@ -1,4 +1,4 @@
-//  Phase-Fair FIFO reader-writer lock
+//  Brandenburg Phase-Fair FIFO reader-writer lock
 
 typedef volatile union {
 	struct {
@@ -16,6 +16,22 @@ typedef volatile union {
 #define PRES 0x2	// writer is present
 #define MASK 0x3
 #define RINC 0x4	// reader count increment
+
+typedef enum {
+	FREE = 0,
+	LOCKED,
+	CONTESTED
+} MutexState;
+
+typedef volatile struct {
+	MutexState state[1];
+} Mutex;
+
+typedef struct {
+  Mutex xcl[1];
+  Mutex wrt[1];
+  uint16_t readers[1];
+} RWLock2;
 
 //	mode & definition for lock implementation
 

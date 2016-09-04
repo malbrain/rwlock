@@ -8,12 +8,13 @@ Initialze locks to all bytes zero. Compile with -D STANDALONE to add benchmarkin
 readerwriter.c: linux/Windows spinlock/phase-fair:
 
     0: type 0   pthread/SRW system rwlocks
-    1: type 1	Reader preference simple rwlock
+    1: type 1	Phase-Fair FIFO simple rwlock
     2: type 2	Mutex based, neither FIFO nor Fair
     3: type 3	FIFO and Phase-Fair Brandenburg spin lock
 
+    Usage: ./readerwriter #thrds lockType
     0: sizeof RWLock0: 56
-    1: sizeof RWLock1: 2
+    1: sizeof RWLock1: 8
     2: sizeof RWLock2: 4
     3: sizeof RWLock3: 8
 
@@ -22,92 +23,54 @@ Sample linux 3.10.0-123.9.3.el7.x86_64 output: (times are in usecs per call of l
     [root@test7x64 xlink]# cc -o readerwriter -g -O3 -D STANDALONE readerwriter.c -lpthread
 
     [root@test7x64 xlink]# ./readerwriter 2 1
-     real 2.112us
-     user 2.128us
-     sys  0.001us
-     futex waits: 0
-     nanosleeps 1575
+     real 0.990us
+     user 1.979us
+     sys  0.000us
+     nanosleeps 8
 
     [root@test7x64 xlink]# ./readerwriter 20 1
-     real 2.070us
-     user 2.181us
-     sys  0.009us
-     futex waits: 0
-     nanosleeps 24915
+     real 1.049us
+     user 3.476us
+     sys  0.041us
+     nanosleeps 96672
 
     [root@test7x64 xlink]# ./readerwriter 200 1
-     real 1.926us
-     user 2.470us
-     sys  0.197us
-     futex waits: 0
-     nanosleeps 189805
+     real 4.757us
+     user 13.614us
+     sys  4.124us
+     nanosleeps 4553530
 
     [root@test7x64 xlink]# ./readerwriter 2000 1
-     real 1.756us
-     user 3.052us
-     sys  1.991us
-     futex waits: 0
-     nanosleeps 1018699
+     real 5.465us
+     user 5.841us
+     sys  15.989us
+     nanosleeps 7129710
+
+Sample Simple Mutex based lock 64 bit linux:
 
     [root@test7x64 xlink]# ./readerwriter 2 2
      real 1.359us
      user 2.720us
      sys  0.001us
-     futex waits: 0
      nanosleeps 4
 
     [root@test7x64 xlink]# ./readerwriter 20 2
      real 0.746us
      user 2.933us
      sys  0.004us
-     futex waits: 0
      nanosleeps 2352
 
     [root@test7x64 xlink]# ./readerwriter 200 2
      real 0.694us
      user 2.731us
      sys  0.015us
-     futex waits: 0
      nanosleeps 15612
 
     [root@test7x64 xlink]# ./readerwriter 2000 2
      real 0.744us
      user 2.778us
      sys  0.090us
-     futex waits: 0
      nanosleeps 30071
-
-Sample 64 bit linux FUTEX version:
-
-    [root@test7x64 xlink]# cc -o readerwriter -g -O3 -D STANDALONE -D FUTEX /home/devel/xlink17/cloud/source/readerwriter.c -lpthread
-
-    [root@test7x64-petzent-com xlink]# ./readerwriter 2 2
-     real 0.995us
-     user 1.991us
-     sys  0.000us
-     futex waits: 0
-     nanosleeps 0
-
-    [root@test7x64 xlink]# ./readerwriter 20 2
-     real 0.558us
-     user 2.112us
-     sys  0.063us
-     futex waits: 14779
-     nanosleeps 0
-
-    [root@test7x64 xlink]# ./readerwriter 200 2
-     real 0.776us
-     user 2.208us
-     sys  0.875us
-     futex waits: 394389
-     nanosleeps 0
-
-    [root@test7x64 xlink]# ./readerwriter 2000 2
-     real 0.738us
-     user 2.193us
-     sys  0.677us
-     futex waits: 305082
-     nanosleeps 0
 
 Sample Brandenburg Phase-Fair FIFO 64 bit linux:
 
@@ -115,28 +78,24 @@ Sample Brandenburg Phase-Fair FIFO 64 bit linux:
      real 1.283us
      user 2.569us
      sys  0.000us
-     futex waits: 0
      nanosleeps 3
 
     [root@test7x64 xlink]# ./readerwriter 20 3
      real 1.685us
      user 3.178us
      sys  0.014us
-     futex waits: 0
      nanosleeps 67037
 
     [root@test7x64 xlink]# ./readerwriter 200 3
      real 1.760us
      user 3.223us
      sys  0.229us
-     futex waits: 0
      nanosleeps 251252
 
     [root@test7x64 xlink]# ./readerwriter 2000 3
      real 2.030us
      user 3.626us
      sys  2.559us
-     futex waits: 0
      nanosleeps 1392172
 
 sample Windows 7 64bit output:
@@ -169,7 +128,8 @@ rwfutex.c:	Four Linux only versions that utilize futex calls on contention.
 
     0: type 0   pthread/SRW system rwlocks
     1: type 1   Not FIFO nor Phase-Fair
-    3: type 2	FIFO and Phase-Fair Brandenburg futex lock
+    2: type 2	FIFO and Phase-Fair Brandenburg futex lock
+    3: type 3	simple Phase-Fair rwlock
 
     0: sizeof SystemLatch: 56
     1: sizeof FutexLock: 4
@@ -179,7 +139,7 @@ Sample output: (times are in usecs per call of lock/unlock pair)
 
 	-- SCALABLE LOCK (NOT PHASE-FAIR) --
 
-    [root@test7x64 xlink]# cc -o rwfutex -g -O0 -D STANDALONE /home/devel/xlink17/cloud/source/rwfutex.c -lpthread
+    [root@test7x64 xlink]# cc -o rwfutex -g -O3 -D STANDALONE rwfutex.c -lpthread
 
     [root@test7x64 xlink]# ./rwfutex 2 1
      real 1.311us

@@ -19,6 +19,44 @@ int sys_futex(void *addr1, int op, int val1, struct timespec *timeout, void *add
 #include "rwfutex.h"
 uint64_t FutexCnt[1];
 
+int lock_spin (int *cnt) {
+volatile int idx;
+
+	if (!*cnt)
+	  *cnt = 8;
+	else if (*cnt < 1024 * 1024)
+	  *cnt += *cnt / 4;
+
+	if (*cnt < 1024 )
+	  for (idx = 0; idx < *cnt; idx++)
+		pause();
+	else
+		return 1;
+
+	return 0;
+}
+
+void mutex_lock(Mutex *mutex) {
+MutexState c, nxt =  LOCKED;
+
+  while ((c = __sync_val_compare_and_swap(mutex->state, FREE, nxt)) != FREE)
+  {
+    if (c == LOCKED)
+      if (__sync_val_compare_and_swap(mutex->state, LOCKED, CONTESTED) == FREE)
+	    continue;
+
+    sys_futex((void *)mutex->state, FUTEX_WAIT, CONTESTED, NULL, NULL, 0);
+	nxt = CONTESTED;
+  }
+}
+
+void mutex_unlock(Mutex* mutex) {
+	if (__sync_fetch_and_sub(mutex->state, 1) == CONTESTED)  {
+   		*mutex->state = FREE;
+ 		sys_futex( (void *)mutex->state, FUTEX_WAKE, 1, NULL, NULL, 0);
+   }
+}
+
 //  a phase fair reader/writer lock implementation
 
 void WriteLock (RWLock *lock)
@@ -115,6 +153,36 @@ void ReadUnlock (RWLock *lock)
 	  sys_futex( (void *)&lock->rw[1], FUTEX_WAKE_BITSET, INT_MAX, NULL, NULL, QueWr );
 }
 
+
+//	mutex based reader-writer lock
+
+void WriteLock2 (RWLock2 *lock)
+{
+	mutex_lock(lock->xcl);
+	mutex_lock(lock->wrt);
+	mutex_unlock(lock->xcl);
+}
+
+void WriteUnlock2 (RWLock2 *lock)
+{
+	mutex_unlock(lock->wrt);
+}
+
+void ReadLock2 (RWLock2 *lock)
+{
+	mutex_lock(lock->xcl);
+
+	if( !__sync_fetch_and_add (lock->readers, 1) )
+		mutex_lock(lock->wrt);
+
+	mutex_unlock(lock->xcl);
+}
+
+void ReadUnlock2 (RWLock2 *lock)
+{
+	if( !__sync_sub_and_fetch (lock->readers, 1) )
+		mutex_unlock(lock->wrt);
+}
 
 //	lite weight futex Latch Manager
 
@@ -285,11 +353,13 @@ unsigned char Array[256] __attribute__((aligned(64)));
 pthread_rwlock_t syslock[1] = {PTHREAD_RWLOCK_INITIALIZER};
 FutexLock futexlock[1];
 RWLock rwlock[1];
+RWLock2 rwlock2[1];
 
 enum {
 	systemType,
 	futexType,
-	RWType
+	RWType,
+	RWType2
 } LockType;
 
 typedef struct {
@@ -329,6 +399,8 @@ int idx;
 		  futex_readlock(futexlock), work(1, 0), futex_releaseread(futexlock);
 		else if (arg->type == RWType)
 		  ReadLock(rwlock), work(1, 0), ReadUnlock(rwlock);
+		else if (arg->type == RWType2)
+		  ReadLock2(rwlock2), work(1, 0), ReadUnlock2(rwlock2);
 		else
 		  work(1, 0);
 
@@ -339,6 +411,8 @@ int idx;
 			futex_writelock(futexlock), work(10, 1), futex_releasewrite(futexlock);
 		  else if (arg->type == RWType)
 			WriteLock(rwlock), work(10, 1), WriteUnlock(rwlock);
+		  else if (arg->type == RWType2)
+			WriteLock2(rwlock2), work(10, 1), WriteUnlock2(rwlock2);
 		  else
 			work(10, 0);
 #ifdef DEBUG
@@ -370,6 +444,8 @@ Arg *args, base[1];
 		printf("sizeof SystemLatch: %d\n", (int)sizeof(syslock));
 		printf("sizeof FutexLock: %d\n", (int)sizeof(FutexLock));
 		printf("sizeof RWLock: %d\n", (int)sizeof(RWLock));
+		printf("sizeof RWLock2: %d\n", (int)sizeof(RWLock2));
+		printf("sizeof Mutex: %d\n", (int)sizeof(Mutex));
 		exit(1);
 	}
 
