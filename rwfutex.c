@@ -45,6 +45,7 @@ MutexState c, nxt =  LOCKED;
       if (__sync_val_compare_and_swap(mutex->state, LOCKED, CONTESTED) == FREE)
 	    continue;
 
+	__sync_fetch_and_add(FutexCnt, 1);
     sys_futex((void *)mutex->state, FUTEX_WAIT, CONTESTED, NULL, NULL, 0);
 	nxt = CONTESTED;
   }

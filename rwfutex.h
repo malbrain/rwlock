@@ -17,6 +17,8 @@ typedef volatile union {
 #define MASK 0x3
 #define RINC 0x4	// reader count increment
 
+//	Mutex based reader-writer lock
+
 typedef enum {
 	FREE = 0,
 	LOCKED,
