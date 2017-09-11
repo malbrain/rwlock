@@ -390,7 +390,7 @@ int first, idx;
 #ifdef unix
 		__sync_fetch_and_add(&usecs, 1);
 #else
-		_InterlockedIncrement(&usecs);
+		InterlockedIncrement(&usecs);
 #endif
 }
 

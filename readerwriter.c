@@ -65,7 +65,7 @@ double conv;
 		interval = (next->QuadPart - start->QuadPart) / conv;
 	}
 
-	_InterlockedIncrement(NanoCnt);
+	InterlockedIncrement(NanoCnt);
 }
 
 int lock_spin (uint32_t *cnt) {
@@ -95,15 +95,14 @@ void mutex_lock(Mutex* mutex) {
 uint32_t spinCount = 0;
 uint32_t prev;
 
-  while (__sync_fetch_and_or(mutex->lock, 1) & 1)
+  while (__sync_lock_test_and_set(mutex->lock, 1))
 	while (*mutex->lock)
 	  if (lock_spin (&spinCount))
 		lock_sleep(spinCount);
 }
 
 void mutex_unlock(Mutex* mutex) {
-	asm volatile ("" ::: "memory");
-	*mutex->lock = 0;
+	__sync_lock_release(mutex->lock);
 }
 
 
@@ -111,14 +110,14 @@ void mutex_unlock(Mutex* mutex) {
 void mutex_lock(Mutex* mutex) {
 uint32_t spinCount = 0;
 
-  while (_InterlockedOr8(mutex->lock, 1) & 1)
-	while (*mutex->lock & 1)
+  while (InterlockedOr8Acquire(mutex->lock, 1))
+	while (*mutex->lock)
 	  if (lock_spin(&spinCount))
 		lock_sleep(spinCount);
 }
 
 void mutex_unlock(Mutex* mutex) {
-	*mutex->lock = 0;
+	InterlockedAnd8Release(mutex->lock, 0);
 }
 #endif
 
@@ -136,7 +135,7 @@ uint32_t spinCount = 0;
 # ifndef _WIN32
 	} while (!__sync_bool_compare_and_swap(lock->requests->bits, *prev->bits, *next->bits));
 # else
-	} while (_InterlockedCompareExchange(lock->requests->bits, *next->bits, *prev->bits) != *prev->bits);
+	} while (InterlockedCompareExchange(lock->requests->bits, *next->bits, *prev->bits) != *prev->bits);
 # endif
 
 	while (lock->completions->bits[0] != prev->bits[0])
@@ -149,7 +148,7 @@ void WriteUnlock1 (RWLock1 *lock)
 # ifndef _WIN32
 	__sync_fetch_and_add (lock->completions->writer, 1);
 # else
-	_InterlockedExchangeAdd16(lock->completions->writer, 1);
+	InterlockedExchangeAdd16(lock->completions->writer, 1);
 # endif
 }
 
@@ -161,7 +160,7 @@ Counter prev[1];
 # ifndef _WIN32
 	*prev->bits = __sync_fetch_and_add (lock->requests->bits, RDINCR);
 # else
-	*prev->bits =_InterlockedExchangeAdd(lock->requests->bits, RDINCR);
+	*prev->bits = InterlockedExchangeAdd(lock->requests->bits, RDINCR);
 # endif
 	
 	while (*lock->completions->writer != *prev->writer)
@@ -174,7 +173,7 @@ void ReadUnlock1 (RWLock1 *lock)
 # ifndef _WIN32
 	__sync_fetch_and_add (lock->completions->reader, 1);
 # else
-	_InterlockedExchangeAdd16(lock->completions->reader, 1);
+	InterlockedExchangeAdd16(lock->completions->reader, 1);
 # endif
 }
 
@@ -199,7 +198,7 @@ void ReadLock2 (RWLock2 *lock)
 #ifdef unix
 	if( !__sync_fetch_and_add (lock->readers, 1) )
 #else
-	if( !(_InterlockedIncrement16 (lock->readers)-1) )
+	if( !(InterlockedIncrement16 (lock->readers)-1) )
 #endif
 		mutex_lock(lock->wrt);
 
@@ -211,7 +210,7 @@ void ReadUnlock2 (RWLock2 *lock)
 #ifdef unix
 	if( !__sync_sub_and_fetch (lock->readers, 1) )
 #else
-	if( !_InterlockedDecrement16 (lock->readers) )
+	if( !InterlockedDecrement16 (lock->readers) )
 #endif
 		mutex_unlock(lock->wrt);
 }
@@ -224,7 +223,7 @@ uint16_t w, r, tix;
 #ifdef unix
 	tix = __sync_fetch_and_add (lock->ticket, 1);
 #else
-	tix = _InterlockedExchangeAdd16 (lock->ticket, 1);
+	tix = InterlockedExchangeAdd16 (lock->ticket, 1);
 #endif
 	// wait for our ticket to come up
 
@@ -239,7 +238,7 @@ uint16_t w, r, tix;
 #ifdef  unix
 	r = __sync_fetch_and_add (lock->rin, w);
 #else
-	r = _InterlockedExchangeAdd16 (lock->rin, w);
+	r = InterlockedExchangeAdd16 (lock->rin, w);
 #endif
 
 	while( r != *lock->rout )
@@ -252,7 +251,7 @@ void WriteUnlock3 (RWLock3 *lock)
 #ifdef unix
 	__sync_fetch_and_and (lock->rin, ~MASK);
 #else
-	_InterlockedAnd16 (lock->rin, ~MASK);
+	InterlockedAnd16 (lock->rin, ~MASK);
 #endif
 	lock->serving[0]++;
 }
@@ -265,7 +264,7 @@ uint16_t w;
 #ifdef unix
 	w = __sync_fetch_and_add (lock->rin, RINC) & MASK;
 #else
-	w = _InterlockedExchangeAdd16 (lock->rin, RINC) & MASK;
+	w = InterlockedExchangeAdd16 (lock->rin, RINC) & MASK;
 #endif
 	if( w )
 	  while( w == (*lock->rin & MASK) )
@@ -278,7 +277,7 @@ void ReadUnlock3 (RWLock3 *lock)
 #ifdef unix
 	__sync_fetch_and_add (lock->rout, RINC);
 #else
-	_InterlockedExchangeAdd16 (lock->rout, RINC);
+	InterlockedExchangeAdd16 (lock->rout, RINC);
 #endif
 }
 
@@ -388,7 +387,7 @@ int first, idx;
 #ifdef unix
 		__sync_fetch_and_add(&usecs, 1);
 #else
-		_InterlockedIncrement(&usecs);
+		InterlockedIncrement(&usecs);
 #endif
 }
 
