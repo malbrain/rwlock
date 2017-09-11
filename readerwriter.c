@@ -15,6 +15,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <process.h>
+#include <intrin.h>
 #endif
 
 int NanoCnt[1];
@@ -110,14 +111,14 @@ void mutex_unlock(Mutex* mutex) {
 void mutex_lock(Mutex* mutex) {
 uint32_t spinCount = 0;
 
-  while (InterlockedOr8Acquire(mutex->lock, 1))
+  while (_InterlockedOr8(mutex->lock, 1))
 	while (*mutex->lock)
 	  if (lock_spin(&spinCount))
 		lock_sleep(spinCount);
 }
 
 void mutex_unlock(Mutex* mutex) {
-	InterlockedAnd8Release(mutex->lock, 0);
+	_InterlockedAnd8(mutex->lock, 0);
 }
 #endif
 
@@ -148,7 +149,7 @@ void WriteUnlock1 (RWLock1 *lock)
 # ifndef _WIN32
 	__sync_fetch_and_add (lock->completions->writer, 1);
 # else
-	InterlockedExchangeAdd16(lock->completions->writer, 1);
+	_InterlockedExchangeAdd16(lock->completions->writer, 1);
 # endif
 }
 
@@ -173,7 +174,7 @@ void ReadUnlock1 (RWLock1 *lock)
 # ifndef _WIN32
 	__sync_fetch_and_add (lock->completions->reader, 1);
 # else
-	InterlockedExchangeAdd16(lock->completions->reader, 1);
+	_InterlockedExchangeAdd16(lock->completions->reader, 1);
 # endif
 }
 
@@ -223,7 +224,7 @@ uint16_t w, r, tix;
 #ifdef unix
 	tix = __sync_fetch_and_add (lock->ticket, 1);
 #else
-	tix = InterlockedExchangeAdd16 (lock->ticket, 1);
+	tix = _InterlockedExchangeAdd16 (lock->ticket, 1);
 #endif
 	// wait for our ticket to come up
 
@@ -238,7 +239,7 @@ uint16_t w, r, tix;
 #ifdef  unix
 	r = __sync_fetch_and_add (lock->rin, w);
 #else
-	r = InterlockedExchangeAdd16 (lock->rin, w);
+	r = _InterlockedExchangeAdd16 (lock->rin, w);
 #endif
 
 	while( r != *lock->rout )
@@ -264,7 +265,7 @@ uint16_t w;
 #ifdef unix
 	w = __sync_fetch_and_add (lock->rin, RINC) & MASK;
 #else
-	w = InterlockedExchangeAdd16 (lock->rin, RINC) & MASK;
+	w = _InterlockedExchangeAdd16 (lock->rin, RINC) & MASK;
 #endif
 	if( w )
 	  while( w == (*lock->rin & MASK) )
@@ -277,7 +278,7 @@ void ReadUnlock3 (RWLock3 *lock)
 #ifdef unix
 	__sync_fetch_and_add (lock->rout, RINC);
 #else
-	InterlockedExchangeAdd16 (lock->rout, RINC);
+	_InterlockedExchangeAdd16 (lock->rout, RINC);
 #endif
 }
 
