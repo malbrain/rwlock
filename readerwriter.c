@@ -376,6 +376,7 @@ void work (int usecs, int shuffle) {
 volatile int cnt = usecs * 300;
 int first, idx;
 
+#ifdef VALIDATE
 	while(shuffle && usecs--) {
 	  first = Array[0];
 	  for (idx = 0; idx < 255; idx++)
@@ -390,14 +391,15 @@ int first, idx;
 #else
 		InterlockedIncrement(&usecs);
 #endif
+#endif
 }
 
 #ifdef _WIN32
-void __cdecl launch(Arg *arg) {
+UINT __stdcall launch(void *vals) {
 #else
 void *launch(void *vals) {
-Arg *arg = (Arg *)vals;
 #endif
+Arg *arg = (Arg *)vals;
 int idx;
 
 	for( idx = 0; idx < arg->loops; idx++ ) {
@@ -443,6 +445,8 @@ int idx;
 #endif
 #ifndef _WIN32
 	return NULL;
+#else
+	return 0;
 #endif
 }
 
@@ -465,7 +469,14 @@ HANDLE *threads;
 		printf("sizeof RWLock1: %d\n", (int)sizeof(lock1));
 		printf("sizeof RWLock2: %d\n", (int)sizeof(lock2));
 		printf("sizeof RWLock3: %d\n", (int)sizeof(lock3));
-		exit(1);
+
+		threadCnt = 1;
+		LockType = 1;
+	}
+	else
+	{
+		threadCnt = atoi(argv[1]);
+		LockType = atoi(argv[2]);
 	}
 
 	for (idx = 0; idx < 256; idx++)
@@ -485,15 +496,12 @@ HANDLE *threads;
 	overhead[1] = getCpuTime(1);
 	overhead[2] = getCpuTime(2);
 
-	threadCnt = atoi(argv[1]);
-	LockType = atoi(argv[2]);
-
 	args = calloc(threadCnt, sizeof(Arg));
 
 #ifdef unix
-	threads = malloc (threadCnt * sizeof(pthread_t));
+	threads = malloc(ThreadCnt * sizeof(pthread_t));
 #else
-	threads = malloc (threadCnt * sizeof(HANDLE));
+	threads = GlobalAlloc(GMEM_FIXED | GMEM_ZEROINIT, threadCnt * sizeof(HANDLE));
 #endif
 	for (idx = 0; idx < threadCnt; idx++) {
 	  args[idx].loops = 1000000 / threadCnt;
@@ -501,12 +509,11 @@ HANDLE *threads;
 	  args[idx].threadNo = idx;
 	  args[idx].type = LockType;
 #ifdef _WIN32
-	  while ( (int64_t)(threads[idx] = (HANDLE)_beginthread(launch, 65536, args + idx)) < 0LL )
-		fprintf(stderr, "Unable to create thread %d, errno = %d\n", idx, errno);
+	  do threads[idx] = (HANDLE)_beginthreadex(NULL, 131072, launch, (void *)(args + idx), 0, NULL);
+	  while ((int64_t)threads[idx] == -1 && (SwitchToThread(), 1));
 #else
 	  if (pthread_create(threads + idx, NULL, launch, (void *)(args + idx)))
 		fprintf(stderr, "Unable to create thread %d, errno = %d\n", idx, errno);
-
 #endif
 	}
 
@@ -522,10 +529,11 @@ HANDLE *threads;
 		CloseHandle(threads[idx]);
 	}
 #endif
+#ifdef VALIDATE
 	for( idx = 0; idx < 256; idx++)
 	  if (Array[idx] != (unsigned char)(Array[(idx+1) % 256] - 1))
 		fprintf (stderr, "Array out of order\n");
-
+#endif
 	elapsed = getCpuTime(0) - start - overhead[0];
 	if (elapsed < 0)
 		elapsed = 0;
