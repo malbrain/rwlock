@@ -20,52 +20,60 @@ readerwriter.c: linux/Windows spinlock/phase-fair:
 
 sample Windows 10 64bit output:
 
-    C:\Users\Owner\Source\Repos\malbrain\rwlock>x64\release\rwlock 20 3
-     real 0.039us
-     user 0.328us
-     sys  0.000us
-     nanosleeps 40
+    C:\Users\Owner\Source\Repos\malbrain\rwlock>readerwriter 8 3
 
-    C:\Users\Owner\Source\Repos\malbrain\rwlock>x64\release\rwlock 20 2
+    rwlock time/lock:
+     real 0.041us
+     user 0.250us
+     sys  0.000us
+     nanosleeps 34
+
+    rwlock moderate load:
+     real 0.252us
+     user 3.313us
+     sys  0.000us
+     nanosleeps 330
+
+    C:\Users\Owner\Source\Repos\malbrain\rwlock>readerwriter 8 2
+
+    rwlock time/lock:
      real 0.052us
-     user 0.375us
-     sys  0.000us
-     nanosleeps 1316
+     user 0.329us
+     sys  0.031us
+     nanosleeps 1344
 
-    C:\Users\Owner\Source\Repos\malbrain\rwlock>x64\release\rwlock 20 1
-     real 0.689us
-     user 5.406us
+    rwlock moderate load:
+     real 0.266us
+     user 3.297us
      sys  0.000us
-     nanosleeps 49886
+     nanosleeps 1555
 
-    C:\Users\Owner\Source\Repos\malbrain\rwlock>x64\release\rwlock 20 0
+    C:\Users\Owner\Source\Repos\malbrain\rwlock>readerwriter 8 1
+
+    rwlock time/lock:
+     real 0.044us
+     user 0.360us
+     sys  0.000us
+     nanosleeps 22
+
+    rwlock moderate load:
+     real 0.272us
+     user 3.313us
+     sys  0.000us
+     nanosleeps 2505
+
+    C:\Users\Owner\Source\Repos\malbrain\rwlock>readerwriter 8 0
+
+    rwlock time/lock:
      real 0.017us
-     user 0.125us
+     user 0.047us
      sys  0.000us
      nanosleeps 0
 
-    C:\Users\Owner\Source\Repos\malbrain\rwlock>x64\release\rwlock 1000 3
-     real 0.043us
-     user 0.031us
-     sys  0.078us
-     nanosleeps 0
-
-    C:\Users\Owner\Source\Repos\malbrain\rwlock>x64\release\rwlock 1000 2
-     real 0.070us
-     user 0.421us
-     sys  0.093us
-     nanosleeps 4399
-
-    C:\Users\Owner\Source\Repos\malbrain\rwlock>x64\release\rwlock 1000 1
-     real 0.042us
-     user 0.031us
-     sys  0.109us
-     nanosleeps 0
-
-    C:\Users\Owner\Source\Repos\malbrain\rwlock>x64\release\rwlock 1000 0
-     real 0.039us
-     user 0.031us
-     sys  0.109us
+    rwlock moderate load:
+     real 1.282us
+     user 10.063us
+     sys  0.000us
      nanosleeps 0
 
 Please address any questions or concerns to the program author: Karl Malbrain, malbrain@cal.berkeley.edu.
