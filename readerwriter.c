@@ -370,13 +370,14 @@ typedef struct {
 	int threadNo;
 	int loops;
 	int type;
+	int work;
 } Arg;
 
-void work (int usecs, int shuffle) {
+void work (int validate, int usecs, int shuffle) {
 volatile int cnt = usecs * 300;
 int first, idx;
 
-#ifdef VALIDATE
+  if (validate) {
 	while(shuffle && usecs--) {
 	  first = Array[0];
 	  for (idx = 0; idx < 255; idx++)
@@ -391,7 +392,7 @@ int first, idx;
 #else
 		InterlockedIncrement(&usecs);
 #endif
-#endif
+  }
 }
 
 #ifdef _WIN32
@@ -405,33 +406,34 @@ int idx;
 	for( idx = 0; idx < arg->loops; idx++ ) {
 	  if (arg->type == systemType)
 #ifdef unix
-		pthread_rwlock_rdlock(lock0), work(1, 0), pthread_rwlock_unlock(lock0);
+		pthread_rwlock_rdlock(lock0), work(arg->work, 1, 0), pthread_rwlock_unlock(lock0);
 #else
-		AcquireSRWLockShared(lock0), work(1, 0), ReleaseSRWLockShared(lock0);
+		AcquireSRWLockShared(lock0), work(arg->work, 1, 0), ReleaseSRWLockShared(lock0);
 #endif
 	  else if (arg->type == RW1Type)
-		ReadLock1(lock1), work(1, 0), ReadUnlock1(lock1);
+		ReadLock1(lock1), work(arg->work, 1, 0), ReadUnlock1(lock1);
 	  else if (arg->type == RW2Type)
-		ReadLock2(lock2), work(1, 0), ReadUnlock2(lock2);
+		ReadLock2(lock2), work(arg->work, 1, 0), ReadUnlock2(lock2);
 	  else if (arg->type == RW3Type)
-		ReadLock3(lock3), work(1, 0), ReadUnlock3(lock3);
+		ReadLock3(lock3), work(arg->work, 1, 0), ReadUnlock3(lock3);
 	  else
-		work(1,0);
+		work(arg->work, 1,0);
+
 	  if( (idx & 511) == 0)
 	    if (arg->type == systemType)
 #ifdef unix
-		  pthread_rwlock_wrlock(lock0), work(10, 1), pthread_rwlock_unlock(lock0);
+		  pthread_rwlock_wrlock(lock0), work(arg->work, 10, 1), pthread_rwlock_unlock(lock0);
 #else
-		  AcquireSRWLockExclusive(lock0), work(10, 1), ReleaseSRWLockExclusive(lock0);
+		  AcquireSRWLockExclusive(lock0), work(arg->work, 10, 1), ReleaseSRWLockExclusive(lock0);
 #endif
 	  	else if (arg->type == RW1Type)
-		  WriteLock1(lock1), work(10, 1), WriteUnlock1(lock1);
+		  WriteLock1(lock1), work(arg->work, 10, 1), WriteUnlock1(lock1);
 	  	else if (arg->type == RW2Type)
-		  WriteLock2(lock2), work(10, 1), WriteUnlock2(lock2);
+		  WriteLock2(lock2), work(arg->work, 10, 1), WriteUnlock2(lock2);
 	  	else if (arg->type == RW3Type)
-		  WriteLock3(lock3), work(10, 1), WriteUnlock3(lock3);
+		  WriteLock3(lock3), work(arg->work, 10, 1), WriteUnlock3(lock3);
 		else
-		  work(10,1);
+		  work(arg->work, 10,1);
 #ifdef DEBUG
 	  if (arg->type >= 0)
 	   if (!(idx % 100000))
@@ -452,8 +454,8 @@ int idx;
 
 int main (int argc, char **argv)
 {
-double start, elapsed, overhead[3];
-int threadCnt, idx;
+double start[3], elapsed, overhead[2][3];
+int threadCnt, idx, phase;
 Arg *args, base[1];
 
 #ifdef unix
@@ -479,35 +481,48 @@ HANDLE *threads;
 		LockType = atoi(argv[2]);
 	}
 
-	for (idx = 0; idx < 256; idx++)
-		Array[idx] = idx;
-
 	//	calculate non-lock timing
 
-	base->loops = 1000000;
+  for(phase = 0; phase < 2; phase++) {
+	base->loops = 1000000 / threadCnt;;
 	base->threadCnt = 1;
 	base->threadNo = 0;
 	base->type = -1;
+	base->work = phase;
 
-	start = getCpuTime(0);
+	start[0] = getCpuTime(0);
+	start[1] = getCpuTime(1);
+	start[2] = getCpuTime(2);
+
 	launch(base);
 
-	overhead[0] = getCpuTime(0) - start;
-	overhead[1] = getCpuTime(1);
-	overhead[2] = getCpuTime(2);
-
-	args = calloc(threadCnt, sizeof(Arg));
+	overhead[phase][0] = getCpuTime(0) - start[0];
+	overhead[phase][1] = getCpuTime(1) - start[1];
+	overhead[phase][2] = getCpuTime(2) - start[2];
+  }
 
 #ifdef unix
 	threads = malloc(ThreadCnt * sizeof(pthread_t));
 #else
 	threads = GlobalAlloc(GMEM_FIXED | GMEM_ZEROINIT, threadCnt * sizeof(HANDLE));
 #endif
+	args = calloc(threadCnt, sizeof(Arg));
+
+  for(phase = 0; phase < 2; phase++) {
+	start[0] = getCpuTime(0);
+	start[1] = getCpuTime(1);
+	start[2] = getCpuTime(2);
+
+	for (idx = 0; idx < 256; idx++)
+		Array[idx] = idx;
+
 	for (idx = 0; idx < threadCnt; idx++) {
 	  args[idx].loops = 1000000 / threadCnt;
 	  args[idx].threadCnt = threadCnt;
 	  args[idx].threadNo = idx;
 	  args[idx].type = LockType;
+	  args[idx].work = phase;
+
 #ifdef _WIN32
 	  do threads[idx] = (HANDLE)_beginthreadex(NULL, 131072, launch, (void *)(args + idx), 0, NULL);
 	  while ((int64_t)threads[idx] == -1 && (SwitchToThread(), 1));
@@ -523,30 +538,47 @@ HANDLE *threads;
 	for (idx = 0; idx < threadCnt; idx++)
 		pthread_join (threads[idx], NULL);
 #else
-
 	for (idx = 0; idx < threadCnt; idx++) {
 		WaitForSingleObject (threads[idx], INFINITE);
 		CloseHandle(threads[idx]);
 	}
 #endif
-#ifdef VALIDATE
-	for( idx = 0; idx < 256; idx++)
+
+	if (phase)
+	 for( idx = 0; idx < 256; idx++)
 	  if (Array[idx] != (unsigned char)(Array[(idx+1) % 256] - 1))
 		fprintf (stderr, "Array out of order\n");
-#endif
-	elapsed = getCpuTime(0) - start - overhead[0];
+
+	if (!phase)
+		fprintf(stderr, "\nrwlock time/lock: \n");
+	else
+		fprintf(stderr, "\nrwlock moderate load: \n");
+
+	elapsed = getCpuTime(0) - start[0];
+	elapsed -= overhead[phase][0];
+
 	if (elapsed < 0)
 		elapsed = 0;
+
 	fprintf(stderr, " real %.3fus\n", elapsed);
-	elapsed = getCpuTime(1) - overhead[1];
+
+	elapsed = getCpuTime(1) - start[1];
+	elapsed -= overhead[phase][1];
+
 	if (elapsed < 0)
 		elapsed = 0;
+
 	fprintf(stderr, " user %.3fus\n", elapsed);
-	elapsed = getCpuTime(2) - overhead[2];
+
+	elapsed = getCpuTime(2) - start[2];
+	elapsed -= overhead[phase][2];
+
 	if (elapsed < 0)
 		elapsed = 0;
+
 	fprintf(stderr, " sys  %.3fus\n", elapsed);
 	fprintf(stderr, " nanosleeps %d\n", NanoCnt[0]);
+  }
 }
 #endif
 
