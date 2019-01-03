@@ -502,7 +502,7 @@ HANDLE *threads;
   }
 
 #ifdef unix
-	threads = malloc(ThreadCnt * sizeof(pthread_t));
+	threads = malloc(threadCnt * sizeof(pthread_t));
 #else
 	threads = GlobalAlloc(GMEM_FIXED | GMEM_ZEROINIT, threadCnt * sizeof(HANDLE));
 #endif
