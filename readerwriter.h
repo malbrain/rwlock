@@ -1,9 +1,20 @@
 // reader-writer Phase-Fair FIFO lock -- type 1
 
-typedef volatile union {
+#ifndef _RWLOCK_H_
+#define _RWLOCK_H_
+
+#include "../mutex/mutex.h"
+
+#ifndef RWTYPE
+#define RWTYPE 1
+#endif
+
+#if RWTYPE == 1
+
+typedef union {
   struct {
-	uint16_t writer[1];
-	uint16_t reader[1];
+	volatile uint16_t writer[1];
+	volatile uint16_t reader[1];
   };
   uint32_t bits[1];
 } Counter;
@@ -11,45 +22,42 @@ typedef volatile union {
 typedef struct {
   Counter requests[1];
   Counter completions[1];
-} RWLock1;
+} RWLock;
+#endif
 
 #define RDINCR 0x10000
 
-void writeLock1 (RWLock1 *lock);
-void writeUnlock1 (RWLock1 *lock);
-void readLock1 (RWLock1 *lock);
-void readUnlock1 (RWLock1 *lock);
-
 // reader-writer mutex lock (Neither FIFO nor Fair) -- type 2
 
-typedef volatile struct {
-	char lock[1];
-} Mutex;
-
-void mutex_lock(Mutex* mutex);
-void mutex_unlock(Mutex* mutex);
+#if RWTYPE == 2
 
 typedef struct {
-  Mutex xcl[1];
-  Mutex wrt[1];
+  MyMutex xcl[1];
+  MyMutex wrt[1];
   uint16_t readers[1];
-} RWLock2;
-
-void writeLock2 (RWLock2 *lock);
-void writeUnlock2 (RWLock2 *lock);
-void readLock2 (RWLock2 *lock);
-void readUnlock2 (RWLock2 *lock);
+} RWLock;
+#endif
 
 // reader-writer Phase Fair/FIFO lock -- type 3
+
+#if RWTYPE == 3
 
 typedef volatile struct {
 	uint16_t rin[1];
 	uint16_t rout[1];
 	uint16_t ticket[1];
 	uint16_t serving[1];
-} RWLock3;
+} RWLock;
 
 #define PHID 0x1
 #define PRES 0x2
 #define MASK 0x3
 #define RINC 0x4
+#endif
+
+void readLock(RWLock* lock);
+void readUnlock(RWLock* lock);
+void writeLock(RWLock* lock);
+void writeUnlock(RWLock* lock);
+void initLock(RWLock* lock);
+#endif
